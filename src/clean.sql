@@ -18,5 +18,12 @@ SELECT
     from_acct = to_acct AS is_self_transfer,
     from_bank <> to_bank AS is_cross_bank,
     payment_currency <> receiving_currency AS is_currency_mismatch,
-    is_laundering
+    is_laundering,
+    -- cut dates come from src/split.py (CUTS), filled in by load.py
+    CASE
+        WHEN timestamp < TIMESTAMP '{val_start}' THEN 'train'
+        WHEN timestamp < TIMESTAMP '{test_start}' THEN 'val'
+        WHEN timestamp < TIMESTAMP '{tail_start}' THEN 'test'
+        ELSE 'tail'
+    END AS split
 FROM raw_transactions;

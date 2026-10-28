@@ -130,23 +130,24 @@ Sections:
 **Key findings for T7/T8:** Sep 11–18 is a thin tail (1,108 rows, 655 laundering, ~59%, all from listed patterns): attempts still running after licit generation stopped. Cumulative volume is ~64% at the end of Sep 6 and ~83% at the end of Sep 8. Shortcuts: ACH (87% of laundering) is positive; Wire, Reinvestment and currency mismatch have 0 laundering; self-transfer has 11. Laundering amounts drop off a cliff under $20k. 5.06M of 5.08M rows share a minute timestamp with another row.
 
 ## Checkpoint B (after T5–T6)
-- [ ] Review EDA findings with triet before fixing the split
+- [x] Review EDA findings with triet before fixing the split
 
 ---
 
-## Task 7: Choose and implement the time split (S)
+## Task 7: Choose and implement the time split (S) — DONE 2026-10-28
 
 **Description:** Pick cut-offs for train / validation / test, roughly **60/20/20**, from the daily plot in T6. Default rule: split by **calendar day on transaction count**, not by laundering count, and decide explicitly what happens to the thin tail days (keep in test, or trim and say so). Implement as a `split` column (`train`/`val`/`test`) on the `transactions` view, driven by two constant dates in `src/split.py`.
 
 **Acceptance criteria:**
-- [ ] Cut-off timestamps are constants in one place, and the view uses them
-- [ ] Table of rows, laundering count and rate per split; every split has enough positives to evaluate (aim for several hundred in val and test)
-- [ ] No split overlaps in time: `max(ts)` of train < `min(ts)` of val < `min(ts)` of test
+- [x] Cut-off timestamps are constants in one place, and the view uses them
+- [x] Table of rows, laundering count and rate per split; every split has enough positives to evaluate (aim for several hundred in val and test)
+- [x] No split overlaps in time: `max(ts)` of train < `min(ts)` of val < `min(ts)` of test
 
 **Verification:** `src/split.py` `assert`s non-overlap and prints the per-split table.
 
 **Dependencies:** T6
 **Files:** `src/split.py`, `src/clean.sql`
+**Outcome:** train Sep 1–6 / val Sep 7–8 / test Sep 9–10, plus a separate `tail` split for Sep 11–18 (three cut dates instead of two). The reasoning is in `docs/decisions.md` § Split.
 
 ## Task 8: Lock target and metrics (S)
 

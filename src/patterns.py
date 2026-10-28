@@ -48,7 +48,7 @@ def main():
     print(con.sql("""
         SELECT pattern_type, COUNT(DISTINCT attempt_id) AS attempts, COUNT(*) AS rows
         FROM pattern_tx GROUP BY 1 ORDER BY 1
-    """))
+    """).df().to_string(index=False))
     matched, ambiguous = con.execute("""
         SELECT COUNT(*), COUNT(*) FILTER (n > 1)
         FROM (SELECT pattern_row, COUNT(*) n FROM tx_pattern GROUP BY 1)

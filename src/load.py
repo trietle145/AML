@@ -2,6 +2,8 @@ from pathlib import Path
 
 import duckdb
 
+from split import CUTS
+
 ROOT = Path(__file__).resolve().parent.parent
 CSV = ROOT / "data/raw/HI-Small_Trans.csv"
 DB = ROOT / "data/aml.duckdb"
@@ -39,7 +41,7 @@ def main():
     assert rows == EXPECTED_ROWS, rows
     assert laundering == EXPECTED_LAUNDERING, laundering
 
-    con.execute((ROOT / "src/clean.sql").read_text())
+    con.execute((ROOT / "src/clean.sql").read_text().format(**CUTS))
     n, ids = con.execute("SELECT COUNT(*), COUNT(DISTINCT tx_id) FROM transactions").fetchone()
     assert n == ids == rows, (n, ids, rows)
     quality_summary(con, rows)
