@@ -1,4 +1,7 @@
-data/
+data/*
+!data/raw/
+data/raw/*
+!data/raw/README.md
 .venv/
 *.duckdb
 __pycache__/
