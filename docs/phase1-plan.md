@@ -25,14 +25,14 @@ T5 and T6 can run in parallel. Everything else is sequential.
 
 ---
 
-## Task 1: Project setup (XS)
+## Task 1: Project setup (XS) — DONE 2026-10-28
 
 **Description:** Minimal skeleton so later tasks have a place to live.
 
 **Acceptance criteria:**
-- [ ] `requirements.txt` with `duckdb`, `pandas`, `pyarrow`, `matplotlib`, `scikit-learn`, `jupyter` (pinned)
-- [ ] `.gitignore` excludes `data/`, `.venv/`, `*.duckdb`
-- [ ] Folders: `data/raw/`, `src/`, `notebooks/`, `reports/figures/`; `git init` done
+- [x] `requirements.txt` with `duckdb`, `pandas`, `pyarrow`, `matplotlib`, `scikit-learn`, `jupyter` (pinned)
+- [x] `.gitignore` excludes `data/`, `.venv/`, `*.duckdb`
+- [x] Folders: `data/raw/`, `src/`, `notebooks/`, `reports/figures/`; `git init` done
 
 **Verification:** `pip install -r requirements.txt` succeeds in a fresh venv; `python -c "import duckdb; print(duckdb.__version__)"` prints a version.
 
@@ -46,22 +46,22 @@ T5 and T6 can run in parallel. Everything else is sequential.
 **Description:** Fetch the two HI-Small files from Kaggle (`ealtman2019/ibm-transactions-for-anti-money-laundering-aml`). Either via the Kaggle CLI with your API token (`kaggle datasets download ... -f HI-Small_Trans.csv`, same for `HI-Small_Patterns.txt`) or by hand from the website. Do **not** download the whole dataset; Large is ~16 GB.
 
 **Acceptance criteria:**
-- [ ] `data/raw/HI-Small_Trans.csv` and `data/raw/HI-Small_Patterns.txt` exist
-- [ ] Row count recorded in `data/raw/README.md` (expect roughly 5.08M rows, roughly 5.2k laundering)
+- [x] `data/raw/HI-Small_Trans.csv` and `data/raw/HI-Small_Patterns.txt` exist
+- [x] Row count recorded in `data/raw/README.md` (expect roughly 5.08M rows, roughly 5.2k laundering)
 
 **Verification:** Count lines in the CSV; check the header has the 11 expected columns (Timestamp, From Bank, Account, To Bank, Account, Amount Received, Receiving Currency, Amount Paid, Payment Currency, Payment Format, Is Laundering).
 
 **Dependencies:** T1
 **Files:** `data/raw/*` (not committed), `data/raw/README.md`
 
-## Task 3: Load into DuckDB (S)
+## Task 3: Load into DuckDB (S) — DONE 2026-10-28
 
 **Description:** `src/load.py` reads the CSV into table `raw_transactions` with an **explicit schema** (no type sniffing; the duplicate `Account` header must be renamed to `from_account` / `to_account`).
 
 **Acceptance criteria:**
-- [ ] `python src/load.py` builds `data/aml.duckdb` from scratch, idempotently (drop + recreate)
-- [ ] Row count in DuckDB equals CSV row count from T2
-- [ ] `SUM(is_laundering)` matches the expected count
+- [x] `python src/load.py` builds `data/aml.duckdb` from scratch, idempotently (drop + recreate)
+- [x] Row count in DuckDB equals CSV row count from T2
+- [x] `SUM(is_laundering)` matches the expected count
 
 **Verification:** Script prints and `assert`s both counts; rerunning gives the same numbers.
 

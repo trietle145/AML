@@ -26,3 +26,5 @@ Transaction-level laundering detection on IBM AML **HI-Small** (synthetic). Head
 ## Environment
 
 Windows, Python 3.13, uv. Plain scripts in `src/`, one EDA notebook in `notebooks/`. Each non-trivial script carries an `assert`-based self-check.
+
+Comments: one-line `#` comments, only where the code isn't obvious. Files start straight with code (imports).
