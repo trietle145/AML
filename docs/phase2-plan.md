@@ -66,19 +66,20 @@ All sequential. T2 is a thin end-to-end slice (features → model → metrics) s
 **Dependencies:** None
 **Files:** `src/features.py`
 
-## Task 2: End-to-end slice: logistic regression on A, scored on val (M)
+## Task 2: End-to-end slice: logistic regression on A, scored on val (M) — DONE 2026-10-28
 
 **Description:** `src/train.py` loads a split's features from DuckDB (float32), fits a scikit-learn logistic regression (one-hot categoricals, standardized numerics, `class_weight="balanced"`) on train, writes scores for all rows to `scores`. `src/evaluate.py` reads `scores` and runs every `metrics.py` function on a chosen split (val by default), plus recall by pattern from `tx_pattern`. Also stores the "is ACH" floor as a scorer so every table has it.
 
 **Acceptance criteria:**
-- [ ] `python src/train.py lr A` then `python src/evaluate.py --split val` prints PR-AUC [CI], best F1 + threshold, P/R@500/day, recall by pattern, for `is_ach` and `lr/A`
-- [ ] `lr/A` val PR-AUC beats the `is_ach` floor (0.0067)
-- [ ] `evaluate.py` refuses `--split test` unless `--final` is given (test is scored once), and refuses `--split train` (in-sample)
+- [x] `python src/train.py lr A` then `python src/evaluate.py --split val` prints PR-AUC [CI], best F1 + threshold, P/R@500/day, recall by pattern, for `is_ach` and `lr/A`
+- [x] `lr/A` val PR-AUC beats the `is_ach` floor (0.0067)
+- [x] `evaluate.py` refuses `--split test` unless `--final` is given (test is scored once), and refuses `--split train` (in-sample)
 
 **Verification:** both commands run; the `is_ach` PR-AUC point estimate matches 0.0067 in `decisions.md`. CI bounds may differ slightly: the floor used 200 resamples, `evaluate.py` uses 1,000.
 
 **Dependencies:** T1
 **Files:** `src/train.py`, `src/evaluate.py`, `requirements.txt`
+**Outcome (val, 1,000 resamples, about 4 min):** `is_ach` PR-AUC 0.0067 [0.0062, 0.0072], F1 0.015. `lr/A` PR-AUC 0.0145 [0.0130, 0.0161], F1 0.036 at threshold 0.916, P/R@500/day 0.019 / 0.018. `lr/A` recall at its val threshold is 0.32–0.51 on listed patterns but only 0.09 on UNLISTED. `is_ach` P@500/day reads 0.012 here against 0.008 in the decisions floor: with a binary score, the top 500 is a random draw among tied ACH rows, so it moves with row order. Its PR-AUC is unaffected. `python src/train.py all` currently runs `is_ach` + `lr A` in about 25 s.
 
 ## Task 3: Behavioral features (M, highest risk)
 
