@@ -1,6 +1,6 @@
 # Decisions
 
-*The single place Phases 2–5 read the split, target and metrics from. After triet approves it, nothing here changes.*
+*The single place Phases 2–5 read the split, target and metrics from. Approved by triet on 2026-10-28; locked from here on.*
 
 ## Target
 

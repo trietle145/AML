@@ -178,7 +178,7 @@ Sections:
 ## Checkpoint C: Phase 1 complete
 - [x] `python src/load.py && python src/patterns.py && python src/split.py` rebuilds everything from raw files
 - [x] EDA notebook runs clean
-- [ ] `docs/decisions.md` reviewed and approved by triet; after this, split and metrics don't change
+- [x] `docs/decisions.md` reviewed and approved by triet (2026-10-28); after this, split and metrics don't change
 
 ---
 
