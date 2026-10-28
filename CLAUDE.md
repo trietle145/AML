@@ -27,4 +27,6 @@ Transaction-level laundering detection on IBM AML **HI-Small** (synthetic). Head
 
 Windows, Python 3.13, uv. Plain scripts in `src/`, one EDA notebook in `notebooks/`. Each non-trivial script carries an `assert`-based self-check.
 
+Git: Claude may commit and push to `origin main` after a task passes its checks. Commits are authored by Triet Le only; no Co-Authored-By or other Claude attribution lines. Messages are short, lowercase, describing what changed.
+
 Comments: one-line `#` comments, only where the code isn't obvious. Files start straight with code (imports).

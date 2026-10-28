@@ -68,23 +68,25 @@ T5 and T6 can run in parallel. Everything else is sequential.
 **Dependencies:** T2
 **Files:** `src/load.py`
 
-## Task 4: Clean into a `transactions` view (S)
+## Task 4: Clean into a `transactions` view (S) — DONE 2026-10-28
 
 **Description:** One SQL view on top of `raw_transactions` that every later phase uses. Adds: `tx_id` (stable row number ordered by timestamp, then original row order), parsed `ts`, `from_acct` / `to_acct` keys (bank+account), `day`, `hour`, `is_self_transfer`, `is_cross_bank`, `is_currency_mismatch`, `amount_paid` and `amount_received` as doubles. Checks for nulls, exact duplicates, negative or zero amounts, and records what it finds.
 
 **Acceptance criteria:**
-- [ ] `src/clean.sql` (run by `load.py`) creates the view; the view has the same row count as the raw table
-- [ ] A data-quality summary (nulls, duplicates, zero amounts, self-transfers) is printed and copied into `docs/decisions.md` later
-- [ ] Any row dropped is dropped for a written reason; default is to drop nothing
+- [x] `src/clean.sql` (run by `load.py`) creates the view; the view has the same row count as the raw table
+- [x] A data-quality summary (nulls, duplicates, zero amounts, self-transfers) is printed and copied into `docs/decisions.md` later
+- [x] Any row dropped is dropped for a written reason; default is to drop nothing
 
 **Verification:** `SELECT COUNT(*), COUNT(DISTINCT tx_id) FROM transactions` gives equal numbers; spot-check 5 rows against the CSV.
 
 **Dependencies:** T3
 **Files:** `src/clean.sql`, `src/load.py`
 
+**Findings (copy into decisions.md in T8):** no nulls; no zero or negative amounts; 9 exact duplicate pairs, all licit micro-amount Bitcoin/ACH transfers, kept as real repeat payments; nothing dropped. Self-transfers: 591,212 rows, 11 laundering. Cross-bank: 4,387,090 rows, 5,074 of 5,177 laundering. Currency mismatch: 72,170 rows, **0 laundering**, so it is a negative shortcut, not the positive one the review expected. Time range: 2022-09-01 00:00 to 2022-09-18 16:18.
+
 ## Checkpoint A (after T1–T4)
-- [ ] `python src/load.py` rebuilds the database from raw files in one command
-- [ ] Counts match the CSV; data-quality summary looks sane
+- [x] `python src/load.py` rebuilds the database from raw files in one command
+- [x] Counts match the CSV; data-quality summary looks sane
 
 ---
 

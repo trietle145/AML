@@ -39,6 +39,28 @@ def main():
     assert rows == EXPECTED_ROWS, rows
     assert laundering == EXPECTED_LAUNDERING, laundering
 
+    con.execute((ROOT / "src/clean.sql").read_text())
+    n, ids = con.execute("SELECT COUNT(*), COUNT(DISTINCT tx_id) FROM transactions").fetchone()
+    assert n == ids == rows, (n, ids, rows)
+    quality_summary(con, rows)
+
+
+# no rows are dropped; this only reports what is there
+def quality_summary(con, rows):
+    nulls = con.execute("SELECT " + ", ".join(f"COUNT(*) - COUNT({c})" for c in COLUMNS) + " FROM raw_transactions").fetchone()
+    print("nulls:", {c: v for c, v in zip(COLUMNS, nulls) if v} or "none")
+    distinct = con.execute("SELECT COUNT(*) FROM (SELECT DISTINCT * EXCLUDE (src_row) FROM raw_transactions)").fetchone()[0]
+    print(f"exact duplicate rows (beyond first copy): {rows - distinct:,}")
+    for name, cond in [
+        ("amount_paid <= 0", "amount_paid <= 0"),
+        ("amount_received <= 0", "amount_received <= 0"),
+        ("self-transfers", "is_self_transfer"),
+        ("cross-bank", "is_cross_bank"),
+        ("currency mismatch", "is_currency_mismatch"),
+    ]:
+        n, pos = con.execute(f"SELECT COUNT(*), COALESCE(SUM(is_laundering), 0) FROM transactions WHERE {cond}").fetchone()
+        print(f"{name}: {n:,} rows, {pos:,} laundering")
+
 
 if __name__ == "__main__":
     main()
