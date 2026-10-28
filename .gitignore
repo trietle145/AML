@@ -3,3 +3,4 @@ data/
 *.duckdb
 __pycache__/
 .ipynb_checkpoints/
+CLAUDE.md

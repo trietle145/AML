@@ -90,19 +90,20 @@ T5 and T6 can run in parallel. Everything else is sequential.
 
 ---
 
-## Task 5: Parse the patterns file (S)
+## Task 5: Parse the patterns file (S) — DONE 2026-10-28
 
 **Description:** `HI-Small_Patterns.txt` lists laundering attempts as blocks (`BEGIN LAUNDERING ATTEMPT - FAN-IN ...` … `END`), each followed by transaction lines in the same format as the CSV. Parse it into table `pattern_tx(attempt_id, pattern_type, ...)` and join to `transactions` on (timestamp, accounts, amount, currency, format) to get `tx_id → pattern_type`. **Evaluation only; never a feature.**
 
 **Acceptance criteria:**
-- [ ] `src/patterns.py` loads the table; pattern types listed with counts
-- [ ] Match rate reported: share of pattern rows found in `transactions`, and share of laundering transactions that have **no** pattern (the "unlisted" bucket)
-- [ ] Ambiguous matches (one pattern row matching several transactions) counted, not silently dropped
+- [x] `src/patterns.py` loads the table; pattern types listed with counts
+- [x] Match rate reported: share of pattern rows found in `transactions`, and share of laundering transactions that have **no** pattern (the "unlisted" bucket)
+- [x] Ambiguous matches (one pattern row matching several transactions) counted, not silently dropped
 
 **Verification:** Every matched transaction has `is_laundering = 1`; script `assert`s it.
 
 **Dependencies:** T4
 **Files:** `src/patterns.py`
+**Findings:** 370 attempts and 3,209 pattern rows. All 3,209 match exactly one transaction: 100% match rate, 0 ambiguous, and no transaction belongs to two attempts. **1,968 of the 5,177 laundering transactions (38%) are unlisted**, so the unlisted bucket is the largest group in any recall-by-pattern breakdown. Tables: `pattern_tx` (the parsed rows) and `tx_pattern` (pattern_row, attempt_id, pattern_type, tx_id).
 
 ## Task 6: EDA notebook (M)
 
