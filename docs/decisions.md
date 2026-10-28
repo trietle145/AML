@@ -1,6 +1,51 @@
 # Decisions
 
-*The single place Phases 2–5 read the split, target and metrics from. After triet approves it, nothing here changes. Target, metrics and the feature rule are added in T8.*
+*The single place Phases 2–5 read the split, target and metrics from. After triet approves it, nothing here changes.*
+
+## Target
+
+- **Transaction level (what models predict):** `is_laundering` for each row of `transactions`.
+- **Account level (for alerts and account metrics):** an account (`bank:account`) is positive for a period if it sends or receives at least one laundering transaction in that period. Account scores are aggregated from transaction scores (e.g. max per account per day), and the aggregation is stated wherever account metrics are reported.
+
+## Feature rule
+
+- A feature for a transaction may only use transactions with `ts` **strictly earlier** than its own. Same-minute rows don't see each other; 5.06M of 5.08M rows share a minute.
+- Train, val, test and tail rows all compute features the same way, looking back over all earlier data regardless of split. A test row may see train-period history, which is realistic.
+- **Never features:** pattern types or anything from `tx_pattern` (evaluation only), raw account or bank IDs (attempts cross the split cuts, so IDs would let a model memorize dirty accounts), `tx_id`, `src_row`, and `split`.
+
+## Metrics
+
+All live in `src/metrics.py`. Run `python src/metrics.py` for the self-check and the floors below.
+
+| Metric | Function | Rule |
+|---|---|---|
+| PR-AUC (primary) | `pr_auc` | average precision |
+| Minority-class F1 (primary) | `best_f1_threshold`, `f1_at` | threshold chosen on val, applied unchanged to test |
+| Precision / recall at alert budget | `precision_recall_at_k_per_day` | top **K = 500 alerts per day**, totalled over the split's days; ties broken by a seeded shuffle |
+| Recall by pattern | `recall_by_pattern` | recall at the val-chosen threshold, per pattern type plus `UNLISTED` |
+| Uncertainty | `bootstrap_ci`, `paired_bootstrap_ci` | 1,000 resamples of the test set, 95% percentile CI |
+
+- **Why K = 500:** test averages about 431k transactions and 478 laundering transactions per day. 500 alerts per day is about 0.12% of volume and roughly one day's positives, a realistic investigator queue where a near-perfect model could catch most of a day's laundering.
+- **"Significantly better":** the paired-bootstrap 95% CI of the difference (model A minus model B, same resamples) excludes 0.
+- **Reporting:** headline numbers come from `test`. `tail` is reported in its own column and never pooled with test. Test is scored once per final model; all tuning happens on val.
+- **Runtime:** a bootstrap over about 860k rows takes roughly 0.3 s per resample, so 1,000× is a few minutes per model.
+
+## Baseline floor (val)
+
+| Scorer | PR-AUC [95% CI] | Best F1 | P@500/day | R@500/day |
+|---|---|---|---|---|
+| random | 0.0011 [0.0010, 0.0012] | 0.003 | 0.001 | 0.001 |
+| is ACH | 0.0067 [0.0062, 0.0073] | 0.015 | 0.008 | 0.008 |
+
+CIs come from 200 resamples, which is enough for a floor. The random PR-AUC matches the val base rate (0.107%), as it should. "Is ACH" flags 100% of every listed pattern type in val but only 61.5% of UNLISTED laundering: 3,208 of the 3,209 pattern transactions in the whole dataset are ACH. So a per-transaction model gets the listed patterns' payment format for free, and recall by pattern has to be read with that in mind.
+
+## Data quality (from T4)
+
+No nulls, no zero or negative amounts, and no rows dropped. 9 exact duplicate pairs exist; all are licit micro-amount Bitcoin/ACH transfers, kept as real repeat payments.
+
+## Shortcut features (from T6)
+
+ACH is strongly positive (87% of laundering). Wire, Reinvestment and currency mismatch have 0 laundering. Self-transfer has 11 laundering rows in 591k. Saudi Riyal is about 4× the base rate. Laundering amounts drop off sharply just under $20k. These are real signal in the generator, not leaks; the per-transaction baseline uses them, and the graph features have to beat that. Full table: `notebooks/01_eda.ipynb`, "Shortcut-feature candidates".
 
 ## Split
 

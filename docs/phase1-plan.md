@@ -149,7 +149,7 @@ Sections:
 **Files:** `src/split.py`, `src/clean.sql`
 **Outcome:** train Sep 1–6 / val Sep 7–8 / test Sep 9–10, plus a separate `tail` split for Sep 11–18 (three cut dates instead of two). The reasoning is in `docs/decisions.md` § Split.
 
-## Task 8: Lock target and metrics (S)
+## Task 8: Lock target and metrics (S) — DONE 2026-10-28
 
 **Description:** Write `docs/decisions.md` and a small `src/metrics.py` so Phases 2–4 all score the same way.
 
@@ -166,9 +166,9 @@ Sections:
 `src/metrics.py` has `pr_auc`, `best_f1_threshold`, `f1_at`, `precision_recall_at_k_per_day`, `recall_by_pattern`, `paired_bootstrap_ci`, plus an `assert`-based self-check on a toy example under `if __name__ == "__main__"`.
 
 **Acceptance criteria:**
-- [ ] `docs/decisions.md` covers every bullet above
-- [ ] `python src/metrics.py` runs its self-check and passes
-- [ ] A trivial scorer (random scores, and "is ACH") is run through `metrics.py` on val, giving the floor any Phase 2 model has to beat
+- [x] `docs/decisions.md` covers every bullet above
+- [x] `python src/metrics.py` runs its self-check and passes
+- [x] A trivial scorer (random scores, and "is ACH") is run through `metrics.py` on val, giving the floor any Phase 2 model has to beat
 
 **Verification:** Self-check passes; random-score PR-AUC ≈ the base rate.
 
@@ -176,8 +176,8 @@ Sections:
 **Files:** `docs/decisions.md`, `src/metrics.py`
 
 ## Checkpoint C: Phase 1 complete
-- [ ] `python src/load.py && python src/patterns.py && python src/split.py` rebuilds everything from raw files
-- [ ] EDA notebook runs clean
+- [x] `python src/load.py && python src/patterns.py && python src/split.py` rebuilds everything from raw files
+- [x] EDA notebook runs clean
 - [ ] `docs/decisions.md` reviewed and approved by triet; after this, split and metrics don't change
 
 ---
