@@ -41,7 +41,7 @@ T5 and T6 can run in parallel. Everything else is sequential.
 
 ## Task 2: Download raw data (XS, needs triet) — DONE 2026-10-28
 
-*Files are in `data/raw/`: 5,078,345 transaction rows, 370 pattern attempts across 8 types. `HI-Small_accounts.csv` was also downloaded and is unused in Phase 1. The README below is still to write.*
+*Files are in `data/raw/`: 5,078,345 transaction rows, 370 pattern attempts across 8 types. `HI-Small_accounts.csv` was also downloaded and is unused in Phase 1. README written: 5,177 laundering rows.*
 
 **Description:** Fetch the two HI-Small files from Kaggle (`ealtman2019/ibm-transactions-for-anti-money-laundering-aml`). Either via the Kaggle CLI with your API token (`kaggle datasets download ... -f HI-Small_Trans.csv`, same for `HI-Small_Patterns.txt`) or by hand from the website. Do **not** download the whole dataset; Large is ~16 GB.
 
