@@ -127,7 +127,7 @@ Sections:
 
 **Dependencies:** T4 (T5 for section 7 only)
 **Files:** `notebooks/01_eda.ipynb`, `reports/figures/*`
-**Key findings for T7/T8:** Sep 11–18 is a thin tail (1,108 rows, 655 laundering, ~59%, all from listed patterns): attempts still running after licit generation stopped. Cumulative volume is ~64% at the end of Sep 6 and ~83% at the end of Sep 8. Shortcuts: ACH (87% of laundering) is positive; Wire, Reinvestment and currency mismatch have 0 laundering; self-transfer has 11. Laundering amounts drop off a cliff under 0k. 5.06M of 5.08M rows share a minute timestamp with another row.
+**Key findings for T7/T8:** Sep 11–18 is a thin tail (1,108 rows, 655 laundering, ~59%, all from listed patterns): attempts still running after licit generation stopped. Cumulative volume is ~64% at the end of Sep 6 and ~83% at the end of Sep 8. Shortcuts: ACH (87% of laundering) is positive; Wire, Reinvestment and currency mismatch have 0 laundering; self-transfer has 11. Laundering amounts drop off a cliff under $20k. 5.06M of 5.08M rows share a minute timestamp with another row.
 
 ## Checkpoint B (after T5–T6)
 - [ ] Review EDA findings with triet before fixing the split
