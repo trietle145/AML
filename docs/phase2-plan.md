@@ -27,7 +27,7 @@ Checked against `docs/phase1-plan.md` and `docs/plan-review.md` by reading the c
 ## Decisions this plan assumes
 
 - **Two feature sets, cleanly separated so Phase 3's ablation is honest:**
-  - **A, per-transaction:** USD log amount, payment format, payment and receiving currency, hour, `is_cross_bank`, `is_currency_mismatch`, `is_self_transfer`, round-amount flag (round in the **paid currency**, not after converting to USD).
+  - **A, per-transaction:** USD log amount, payment format, payment and receiving currency, hour, `is_cross_bank`, `is_currency_mismatch`, `is_self_transfer`. *(A round-amount flag was planned and dropped in T1: amounts ≥ 100 that are a multiple of 100 in the paid currency are only 0.00–0.05% of rows in every currency, laundering or not, so the flag would be almost always 0.)*
   - **B, behavioral:** each account's *own* past activity on *one side* only. For the sender: its past outgoing transactions. For the receiver: its past incoming transactions. Counts, USD sums, mean / max, amount vs own past mean, time since last transaction (capped at 3d), share of past ACH. Windows **1h / 24h / 3d**.
   - **Saved for Phase 3 (graph), not in B:** anything about counterparties or flows through an account. Distinct counterparties (fan-in/out), in-vs-out on the same account (pass-through), pair history ("sent to this receiver before"), cycles. Pair history stays here: it is a property of the edge between two accounts, not of one account's own activity.
 - **No feature may grow with absolute time.** All accounts appear from Sep 1, so "how long has this account been seen" measures how long the dataset has been running. Median hours since an account's first send are 37 in train, 166 in val and 204 in test, with a train maximum of 144. Test values would sit beyond anything the model trained on. So: no "time since first seen"; windows no longer than 3d (the longest that fills up inside train's 6 days); "time since last" capped at 3d.
@@ -50,14 +50,16 @@ All sequential. T2 is a thin end-to-end slice (features → model → metrics) s
 
 ---
 
-## Task 1: Exchange rates and per-transaction features (S)
+## Task 1: Exchange rates and per-transaction features (S) — DONE 2026-10-28
 
 **Description:** `src/features.py` builds table `features` with `tx_id` and feature set A. USD amounts use per-currency rates derived from train-split currency-mismatch rows.
 
 **Acceptance criteria:**
-- [ ] One row per transaction (`COUNT(*) = COUNT(DISTINCT tx_id) = 5,078,345`), no nulls in A
-- [ ] A rate for all 15 currencies; USD = 1; rates printed. Each USD → X rate agrees with the inverted X → USD median within 1% (asserted)
-- [ ] All `ts` have zero seconds (asserted; the window trick in T3 depends on it)
+- [x] One row per transaction (`COUNT(*) = COUNT(DISTINCT tx_id) = 5,078,345`), no nulls in A
+- [x] A rate for all 15 currencies; USD = 1; rates printed. Each USD → X rate agrees with the inverted X → USD median within 1% (asserted)
+- [x] All `ts` have zero seconds (asserted; the window trick in T3 depends on it)
+
+**Outcome:** builds in about 3 s. Rates are stored in table `fx_rates` (EUR 1.1718, GBP 1.2917, BTC 11,875 USD; largest gap to the cross-check is Bitcoin at 0.05%). `features` has 8 set-A columns. Spot-checked BTC, Yen and Euro rows by hand.
 
 **Verification:** `python src/features.py` runs its asserts; spot-check 3 non-USD rows by hand (EUR should be ≈ 1.17 USD).
 
