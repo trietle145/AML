@@ -21,12 +21,13 @@ TUNING_LOG = ROOT / "reports/phase2-tuning.csv"
 MODELS_DIR = ROOT / "data/models"
 
 
-def load(con, cols):
+def load(con, cols, split=None):
     # numerics cast to FLOAT in SQL so 5M x 42 never sits in memory as float64
     sel = ", ".join(f"f.{c}" if c in CATEGORICAL else f"CAST(f.{c} AS FLOAT) {c}" for c in cols)
+    where = f"WHERE t.split = '{split}'" if split else ""
     df = con.sql(f"""
         SELECT f.tx_id, t.split, t.is_laundering y, {sel}
-        FROM features f JOIN transactions t USING (tx_id) ORDER BY f.tx_id
+        FROM features f JOIN transactions t USING (tx_id) {where} ORDER BY f.tx_id
     """).df()
     strings = [c for c in cols if c in CATEGORICAL and c != "hour"]
     df[strings] = df[strings].astype("category")

@@ -146,19 +146,20 @@ All sequential. T2 is a thin end-to-end slice (features → model → metrics) s
 - No single B feature is a shortcut: the best single-feature val PR-AUC is 0.023 (`in_amt_vs_mean_3d`). The jump from A to AB comes mostly from accounts with no history: about 2.3% of val rows (no past sends or no past receipts) hold 53% of val laundering (551 of 1,036), a mule-account-like effect. It is legal (strictly past) and goes in the T6 write-up.
 - Memory: scores are written in 500k-row chunks, and the string columns load as `category` (the first A+B run ran out of RAM in `load`).
 
-## Task 6: Validation analysis (S)
+## Task 6: Validation analysis (S) — DONE 2026-10-29
 
 **Description:** On val only: feature importance (gain) for `lgbm/AB`, recall by pattern per model, and a leakage smell test on single features (each feature's own val PR-AUC, both signs). Above **0.07** (about 10× "is ACH") the feature is looked at and explained. Above **0.5** it is treated as a leak until proven otherwise. Short written findings.
 
 **Acceptance criteria:**
-- [ ] Importance table and per-pattern recall saved in `reports/`
-- [ ] Each suspicious feature is either explained or removed, with the reason written
-- [ ] Written note on how much of listed-pattern recall comes from ACH alone (see `decisions.md` § Baseline floor)
+- [x] Importance table and per-pattern recall saved in `reports/`
+- [x] Each suspicious feature is either explained or removed, with the reason written
+- [x] Written note on how much of listed-pattern recall comes from ACH alone (see `decisions.md` § Baseline floor)
 
 **Verification:** findings readable in `reports/phase2-results.md` (val section).
 
 **Dependencies:** T5
 **Files:** `src/evaluate.py`, `reports/phase2-results.md`
+**Outcome:** findings are in `reports/phase2-results.md` (val section), with CSVs in `reports/` (`val-metrics`, `val-recall-by-pattern`, `val-importance`, `val-single-feature`, `val-history`). `evaluate.py` now saves its tables, and `--analyze` (about 12 s) does the val-only analysis. Results: no single feature above 0.07 (best 0.023), so nothing removed. `lgbm/AB` gain is 43% the sender's recent ACH share. Inside ACH rows only it still reaches PR-AUC 0.459 (base rate 0.0076), but 99.9% of what it flags is ACH, so non-ACH UNLISTED laundering (38.5% of UNLISTED) is never caught. 2.3% of rows (no sender or receiver history) hold 53% of laundering.
 
 ## Checkpoint B
 - [ ] Review val results with triet **before** touching test
