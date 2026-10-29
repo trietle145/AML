@@ -57,41 +57,46 @@ def final_extras(data, thresholds, split, boot, pairs, prefix, names):
     pd.DataFrame(rows).to_csv(REPORTS / f"{prefix}{split}-recall-by-pattern-ci.csv", index=False)
 
 
-# val only: what lgbm/AB relies on, whether any single feature is a leak, and how much is just "ACH"
-def analyze(con):
-    imp = lgb.Booster(model_file=str(ROOT / "data/models/lgbm_AB.txt"))
+# val only: what an lgbm model relies on, whether any single feature is a leak, and how much is just "ACH"
+def analyze(con, fs="AB", prefix=""):
+    imp = lgb.Booster(model_file=str(ROOT / f"data/models/lgbm_{fs}.txt"))
     imp = pd.DataFrame({"feature": imp.feature_name(), "gain": imp.feature_importance("gain")})
     imp = imp.assign(share=imp.gain / imp.gain.sum()).sort_values("gain", ascending=False)
-    imp.to_csv(REPORTS / "val-importance.csv", index=False)
-    print("lgbm/AB gain importance (top 10):")
+    imp.to_csv(REPORTS / f"{prefix}val-importance.csv", index=False)
+    print(f"lgbm/{fs} gain importance (top 10):")
     print(imp.head(10).round(4).to_string(index=False))
 
     # smell test: each feature alone as a score, both signs; categoricals scored by their val laundering rate
-    v = load(con, FEATURE_SETS["AB"], split="val")
+    v = load(con, FEATURE_SETS[fs], split="val")
     single = {}
-    for c in FEATURE_SETS["AB"]:
+    for c in FEATURE_SETS[fs]:
         s = v.groupby(c, observed=True).y.transform("mean") if c in CATEGORICAL else v[c].astype(float)
         s = s.fillna(s.min() - 1)
         single[c] = max(pr_auc(v.y, s), pr_auc(v.y, -s))
     single = pd.Series(single, name="val_pr_auc").sort_values(ascending=False)
-    single.to_csv(REPORTS / "val-single-feature.csv", index_label="feature")
+    single.to_csv(REPORTS / f"{prefix}val-single-feature.csv", index_label="feature")
+    del v
     print("\nsingle-feature val PR-AUC (top 5; look > 0.07, leak > 0.5):")
     print(single.head(5).round(4).to_string())
     assert single.max() < 0.5, single[single >= 0.5]
 
     # how much of lgbm/AB is "ACH": ranking quality inside ACH rows, and the ACH share of what it flags
     s = con.sql("""
-        SELECT s.score, t.is_laundering y, t.payment_format = 'ACH' ach, f.out_has_history, f.in_has_history
-        FROM scores s JOIN transactions t USING (tx_id) JOIN features f USING (tx_id)
-        WHERE s.split = 'val' AND s.model = 'lgbm' AND s.feature_set = 'AB'
-    """).df()
+        SELECT s.score, t.is_laundering y, t.payment_format = 'ACH' ach, f.out_has_history, f.in_has_history,
+               t.is_laundering = 1 AND p.tx_id IS NULL unlisted
+        FROM scores s JOIN transactions t USING (tx_id) JOIN features f USING (tx_id) LEFT JOIN tx_pattern p USING (tx_id)
+        WHERE s.split = 'val' AND s.model = 'lgbm' AND s.feature_set = ?
+    """, params=[fs]).df()
     thr, _ = best_f1_threshold(s.y, s.score)
     flagged = s[s.score >= thr]
-    print(f"\nlgbm/AB inside ACH rows only: PR-AUC {pr_auc(s.y[s.ach], s.score[s.ach]):.4f} "
+    print(f"\nlgbm/{fs} inside ACH rows only: PR-AUC {pr_auc(s.y[s.ach], s.score[s.ach]):.4f} "
           f"(ACH base rate {s.y[s.ach].mean():.4f}); flagged rows that are ACH: {flagged.ach.mean():.3f}")
     hist = s.groupby(["out_has_history", "in_has_history"]).agg(rows=("y", "size"), laundering=("y", "sum"), rate=("y", "mean"))
-    hist.to_csv(REPORTS / "val-history.csv")
+    hist.to_csv(REPORTS / f"{prefix}val-history.csv")
     print(hist.round(4).to_string())
+    unl = s[s.unlisted].assign(flagged=lambda d: d.score >= thr).groupby("ach").flagged.agg(n="size", caught="sum", recall="mean")
+    unl.to_csv(REPORTS / f"{prefix}val-unlisted-by-ach.csv")
+    print(f"\nUNLISTED recall at the val threshold, by ACH:\n{unl.round(3).to_string()}")
 
 
 def main():
@@ -99,12 +104,14 @@ def main():
     ap.add_argument("--split", default="val", choices=["val", "test", "tail"])
     ap.add_argument("--final", action="store_true", help="required to score test or tail (done once)")
     ap.add_argument("--boot", type=int, default=1000, help="bootstrap resamples")
-    ap.add_argument("--analyze", action="store_true", help="val-only analysis of lgbm/AB instead of metrics")
+    ap.add_argument("--analyze", action="store_true", help="val-only analysis of one lgbm model (--models, default lgbm/AB) instead of metrics")
     ap.add_argument("--phase", type=int, default=2, choices=[2, 3], help="3 writes reports/phase3-* and never touches Phase 2 files")
     ap.add_argument("--models", help="comma-separated models to evaluate (default: all in scores); required for a phase 3 --final run")
     args = ap.parse_args()
     if args.analyze:
-        return analyze(duckdb.connect(str(DB), read_only=True, config={"memory_limit": "3GB"}))
+        fs = (args.models or "lgbm/AB").split("/")[1]
+        con = duckdb.connect(str(DB), read_only=True, config={"memory_limit": "700MB", "threads": 2})
+        return analyze(con, fs, "" if args.phase == 2 else f"phase{args.phase}-")
     final = args.split != "val"
     prefix = "" if args.phase == 2 else f"phase{args.phase}-"
     models = args.models.split(",") if args.models else None

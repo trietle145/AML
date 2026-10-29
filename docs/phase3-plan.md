@@ -152,22 +152,23 @@ The laptop runs one heavy job at a time, so C goes first (cheap, de-risks the co
 **Files:** `src/features.py`
 **Outcome:**- **Columns:** 20 C columns (`SET_C` in `features.py`): `out_/in_cpty_{1h,24h,3d}`; `out_recv_{cnt,usd}_{1h,24h}`, `out_pass_ratio_24h`, `in_send_{cnt,usd}_{1h,24h}`, `in_pass_ratio_24h`; `pair_cnt_3d`, `pair_rev_cnt_3d`, `pair_min_since_last`; `cyc3_cnt_3d`. Pass-through comes from one 10M-row stream (each transaction as a send and a receipt). Pairs use one window per unordered pair with a direction flag. 3-cycles join from the sender's past receipts (62.8M candidates), with an ASOF match for an earlier v → w.- **Build:** `features.py` builds A + B + C in **4 min 16 s**. C runs as one temp table per step: as a single query it ran out of memory, and so did the stream window at 3 GB with all threads. **`features.py` now connects with `memory_limit = 1.5GB`, `threads = 4`.**- **Checks:** no unexpected NULLs; distinct counts ≤ totals and nested windows; drift ≤ 0.001% of test accounts. `--check` (2.5 min, now 277 rows including 40 CYCLE-scheme rows): **0 mismatches for B and C**; leaky variants caught: B frame 7,465 cells, B lag 144, C frame 2,389 (18 columns), C cycle-order 5 (`cyc3_cnt_3d`). Single-feature val PR-AUC: highest C column `pair_rev_cnt_3d` 0.021, all far below 0.07.- **Early signal (all splits):** 16% of laundering goes to a receiver the sender paid in the past 3d (licit 76%). 4.7% goes to someone who paid the sender back (licit 0.05%). Only 212 transactions close a 3-cycle, and 72 of them are laundering.
 
-## Task 3: `lgbm/ABC` on val (S)
+## Task 3: `lgbm/ABC` on val (S) — DONE 2026-10-29
 
 **Description:** Add `"ABC"` to `FEATURE_SETS`, train with the Phase 2 grid via `train.py lgbm ABC --phase 3` (new name; never `all`), and evaluate on val, including the paired val difference against `lgbm/AB`.
 
 **Acceptance criteria:**
-- [ ] `lgbm/ABC` in `scores`, model saved as `lgbm_ABC.txt`, grid in `reports/phase3-tuning.csv`
-- [ ] `lgbm/AB` rows equal the frozen copy; Phase 2 report files unchanged
-- [ ] Val table: PR-AUC, F1, P/R@500, recall by pattern incl. UNLISTED and non-ACH UNLISTED, gain importance of the C columns
+- [x] `lgbm/ABC` in `scores`, model saved as `lgbm_ABC.txt`, grid in `reports/phase3-tuning.csv`
+- [x] `lgbm/AB` rows equal the frozen copy; Phase 2 report files unchanged
+- [x] Val table: PR-AUC, F1, P/R@500, recall by pattern incl. UNLISTED and non-ACH UNLISTED, gain importance of the C columns
 
 **Verification:** `python src/evaluate.py --split val --phase 3 --boot 200`.
 **Dependencies:** T2
 **Files:** `src/train.py`, `src/evaluate.py`
+**Outcome (val, 1,000 resamples):** `lgbm/ABC` PR-AUC **0.444** [0.413, 0.474] (cluster [0.381, 0.499]) vs `lgbm/AB` 0.393. **Paired +0.051 [0.026, 0.075], cluster [0.025, 0.079]: significant.** At the operating point the gain is small (F1 0.479 vs 0.466, P/R@500 0.456 / 0.440 vs 0.446 / 0.431), and per-pattern recall is mixed (FAN-IN 0.80 vs 0.75 up; BIPARTITE 0.35 vs 0.49, STACK 0.33 vs 0.49 down). **UNLISTED 2/379, non-ACH UNLISTED 0/146**; 100% of flagged rows are ACH. Inside ACH, PR-AUC is 0.517 vs 0.459. Gain importance: `in_cpty_3d` (fan-in) 37%, `out_ach_share_24h` 22%, `out_recv_*` (pass-through) 16%. No single feature above 0.023. `lgbm/AB` unchanged; Phase 2 files byte-identical.Changes made on the way:- **Model choice:** the selection rule picked a **1-tree** run (val 0.457, 63 coarse scores). With triet's OK, `train.py` now ignores runs with fewer than `MIN_TREES = 10` trees. It doesn't change the Phase 2 picks (102 and 237 trees). The chosen ABC run is 15 leaves, lr 0.05, min_child 500, 160 trees.- **Memory:** `train.py` loads train and val separately and scores split by split, with categories fixed from the whole table (tail has only ACH, so per-split categories would have shifted codes). DuckDB is capped at **700MB, 2 threads**: the Windows commit limit (RAM + 4 GB page file) left only ~2.9 GB for the process, so higher caps failed OS allocations.
 
 ## Checkpoint A (after T0–T3)
-- [ ] Set C rebuilds in one command and passes its leakage check
-- [ ] `lgbm/ABC` vs `lgbm/AB` on val written down; frozen baseline intact
+- [x] Set C rebuilds in one command and passes its leakage check
+- [x] `lgbm/ABC` vs `lgbm/AB` on val written down; frozen baseline intact
 - [ ] Quick look with triet: is C worth keeping before the GNN starts
 
 ---
