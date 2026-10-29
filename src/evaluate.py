@@ -12,7 +12,9 @@ from metrics import (ALERTS_PER_DAY, best_f1_threshold, bootstrap_ci, f1_at, pai
 from train import CATEGORICAL, FEATURE_SETS, load
 
 REPORTS = ROOT / "reports"
-PAIRS = [("lgbm/AB", "lr/AB"), ("lgbm/AB", "lgbm/A")]
+# phase -> (new model, partner) pairs; a pair is used when both have scores
+PAIRS = {2: [("lgbm/AB", "lr/AB"), ("lgbm/AB", "lgbm/A")],
+         3: [("lgbm/ABC", "lgbm/AB"), ("gnn/AB", "lgbm/AB"), ("gnn/AB", "lgbm/ABC"), ("gnn/AB", "mlp/AB"), ("lgbm/ABG", "lgbm/AB")]}
 
 
 # cluster = laundering attempt for listed-pattern rows, the row itself otherwise
@@ -27,10 +29,10 @@ def load_split(con, split):
 
 
 # final run only: paired differences (iid and attempt-cluster) and recall-by-pattern CIs
-def final_extras(data, thresholds, split, boot):
+def final_extras(data, thresholds, split, boot, pairs, prefix, names):
     by = {name: d for name, d in data.groupby("name")}
     paired = []
-    for a, b in PAIRS:
+    for a, b in pairs:
         da, db = by[a], by[b]
         assert (da.tx_id.to_numpy() == db.tx_id.to_numpy()).all(), "paired scores must cover the same rows"
         row = {"a": a, "b": b}
@@ -39,19 +41,20 @@ def final_extras(data, thresholds, split, boot):
             row.update({"diff": diff, f"lo_{kind}": lo, f"hi_{kind}": hi})
         paired.append(row)
     paired = pd.DataFrame(paired)
-    paired.to_csv(REPORTS / f"{split}-paired.csv", index=False)
+    paired.to_csv(REPORTS / f"{prefix}{split}-paired.csv", index=False)
     print("\npaired PR-AUC differences (a - b):")
     print(paired.round(4).to_string(index=False))
 
     rng, rows = np.random.default_rng(0), []
-    for name, d in by.items():
+    for name in names:
+        d = by[name]
         pos = d[d.y == 1]
         for pattern, g in pos.groupby("pattern"):
             hit = (g.score >= thresholds[name]).to_numpy()
             b = hit[rng.integers(0, len(hit), (boot, len(hit)))].mean(axis=1)
             rows.append({"model": name, "pattern": pattern, "n": len(hit), "recall": hit.mean(),
                          "lo": np.percentile(b, 2.5), "hi": np.percentile(b, 97.5)})
-    pd.DataFrame(rows).to_csv(REPORTS / f"{split}-recall-by-pattern-ci.csv", index=False)
+    pd.DataFrame(rows).to_csv(REPORTS / f"{prefix}{split}-recall-by-pattern-ci.csv", index=False)
 
 
 # val only: what lgbm/AB relies on, whether any single feature is a leak, and how much is just "ACH"
@@ -97,21 +100,38 @@ def main():
     ap.add_argument("--final", action="store_true", help="required to score test or tail (done once)")
     ap.add_argument("--boot", type=int, default=1000, help="bootstrap resamples")
     ap.add_argument("--analyze", action="store_true", help="val-only analysis of lgbm/AB instead of metrics")
+    ap.add_argument("--phase", type=int, default=2, choices=[2, 3], help="3 writes reports/phase3-* and never touches Phase 2 files")
+    ap.add_argument("--models", help="comma-separated models to evaluate (default: all in scores); required for a phase 3 --final run")
     args = ap.parse_args()
     if args.analyze:
         return analyze(duckdb.connect(str(DB), read_only=True, config={"memory_limit": "3GB"}))
     final = args.split != "val"
+    prefix = "" if args.phase == 2 else f"phase{args.phase}-"
+    models = args.models.split(",") if args.models else None
     if final and not args.final:
         ap.error(f"--split {args.split} needs --final: test and tail are scored once, after val review")
-    if final and (REPORTS / f"{args.split}-metrics.csv").exists():
-        ap.error(f"{args.split} was already scored (reports/{args.split}-metrics.csv exists); it is scored once")
+    if final and (REPORTS / f"{prefix}{args.split}-metrics.csv").exists():
+        ap.error(f"{args.split} was already scored (reports/{prefix}{args.split}-metrics.csv exists); it is scored once")
+    if final and args.phase > 2:
+        if not models:
+            ap.error("a phase 3 --final run needs --models (the new models only)")
+        earlier = REPORTS / f"{args.split}-metrics.csv"
+        done = set(pd.read_csv(earlier).model) & set(models) if earlier.exists() else set()
+        if done:
+            ap.error(f"{sorted(done)} already scored on {args.split} in Phase 2; they are pairing partners, not new models")
 
     con = duckdb.connect(str(DB), read_only=True)
     # thresholds always come from val, then get applied unchanged to the evaluated split
     val = load_split(con, "val")
     data = val if not final else load_split(con, args.split)
+    names = models or sorted(data.name.unique())
+    missing = set(names) - set(data.name)
+    if missing:
+        ap.error(f"no scores for {sorted(missing)}")
+    # phase 3 always adds cluster CIs, pairs and recall CIs; phase 2 only on its final run
+    extras = final or args.phase > 2
     rows, recalls, thresholds = [], {}, {}
-    for name, d in data.groupby("name"):
+    for name, d in data[data.name.isin(names)].groupby("name"):
         v = val[val.name == name]
         thr, _ = best_f1_threshold(v.y, v.score)
         thresholds[name] = thr
@@ -119,17 +139,18 @@ def main():
         p_k, r_k = precision_recall_at_k_per_day(d.y, d.score, d.day)
         row = {"model": name, "pr_auc": auc, "ci_lo": lo, "ci_hi": hi, "f1": f1_at(d.y, d.score, thr),
                "threshold": thr, f"p@{ALERTS_PER_DAY}/day": p_k, f"r@{ALERTS_PER_DAY}/day": r_k}
-        if final:
+        if extras:
             _, row["ci_lo_cluster"], row["ci_hi_cluster"] = bootstrap_ci(d.y, d.score, n=args.boot, clusters=d.cluster.to_numpy())
             row["scored_at"] = datetime.datetime.now().isoformat(timespec="minutes")
         rows.append(row)
         by_pattern = recall_by_pattern(d.y, d.score >= thr, d.pattern)
         recalls[name] = by_pattern.recall
-    if final:
-        final_extras(data, thresholds, args.split, args.boot)
+    if extras:
+        pairs = [(a, b) for a, b in PAIRS[args.phase] if a in names and b in set(data.name)]
+        final_extras(data, thresholds, args.split, args.boot, pairs, prefix, names)
     metrics, patterns = pd.DataFrame(rows), pd.DataFrame(recalls).assign(n=by_pattern.n)
-    metrics.to_csv(REPORTS / f"{args.split}-metrics.csv", index=False)
-    patterns.to_csv(REPORTS / f"{args.split}-recall-by-pattern.csv", index_label="pattern")
+    metrics.to_csv(REPORTS / f"{prefix}{args.split}-metrics.csv", index=False)
+    patterns.to_csv(REPORTS / f"{prefix}{args.split}-recall-by-pattern.csv", index_label="pattern")
     print(f"split={args.split}  rows={len(d):,}  positives={int(d.y.sum()):,}  boot={args.boot}")
     print(metrics.round(4).to_string(index=False))
     print("\nrecall by pattern at the val threshold")

@@ -182,8 +182,8 @@ All sequential. T2 is a thin end-to-end slice (features → model → metrics) s
 **Outcome:** test and tail scored once on 2026-10-29, 17:05–18:12 (about 67 min, almost all of it bootstrap). Test PR-AUC: `lgbm/AB` 0.292 [0.261, 0.328] (cluster [0.232, 0.351]), `lgbm/A` 0.070, `lr/AB` 0.026, `lr/A` 0.015, floor 0.006. Paired `lgbm/AB − lgbm/A` +0.222 and `lgbm/AB − lr/AB` +0.266, both significant under iid and cluster CIs. UNLISTED recall is 2.4% (9 of 371). The tail can't separate the models (59% base rate, all 0.95–0.97). `lgbm/AB` is named the Phase 3 baseline in `decisions.md`. `metrics.py` gained `clusters=` (self-check confirms clusters stay whole); `evaluate.py --final` adds cluster CIs, paired CSVs and recall-by-pattern CIs, and refuses a second test or tail run.
 
 ## Checkpoint C: Phase 2 complete
-- [ ] `python src/features.py && python src/train.py all && python src/evaluate.py --split val` rebuilds everything
-- [ ] Results reviewed by triet; baseline scores frozen in `scores` for Phase 3's paired comparison
+- [x] `python src/features.py && python src/train.py all && python src/evaluate.py --split val` rebuilds everything: **waived by triet 2026-10-29.** All models were trained with the current code, and the full rebuild is deferred to Phase 3's Checkpoint C, which compares `lgbm/AB` against the frozen copy.
+- [x] Results reviewed by triet (approved 2026-10-29); baseline scores frozen in `scores` for Phase 3's paired comparison (frozen copy made 2026-10-29: table `scores_frozen_lgbm_AB`, file `data/models/lgbm_AB.frozen.txt`)
 
 ---
 

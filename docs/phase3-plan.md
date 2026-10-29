@@ -95,7 +95,7 @@ Paired test comparisons: `lgbm/ABC − lgbm/AB`, `gnn/AB − lgbm/AB`, `gnn/AB �
 ## Dependency graph
 
 ```
-T0 close Phase 2 Checkpoint C (backup frozen scores)
+T0 back up frozen baseline (done), close Phase 2 Checkpoint C
  └ T1 eval harness: --phase 3 routing, fast bootstrap, per-model test guard
     ├ T2 set C + leakage check ─ T3 lgbm/ABC on val ─────────────────────────────┐
     └ T4 GNN export, snapshots, timing ─ T5 gnn/AB + mlp/AB ─ T6 GNN grid + val ─┴ Checkpoint B (triet) ─ T7 test once
@@ -106,20 +106,22 @@ The laptop runs one heavy job at a time, so C goes first (cheap, de-risks the co
 
 ---
 
-## Task 0: Close Phase 2 Checkpoint C without losing the baseline (XS)
+## Task 0: Back up the frozen baseline and close Phase 2 Checkpoint C (XS) — DONE 2026-10-29
 
-**Description:** Copy the `lgbm/AB` rows of `scores` to a table `scores_frozen_lgbm_AB`, and `lgbm_AB.txt` to `lgbm_AB.frozen.txt`. Then run the Checkpoint C rebuild (`features.py`, `train.py all`) and compare scores. **No `evaluate.py` run:** identical scores mean identical metrics, and a val run would rewrite the Phase 2 val CSVs.
+**Description:** Copy the `lgbm/AB` rows of `scores` to a table `scores_frozen_lgbm_AB`, and `lgbm_AB.txt` to `lgbm_AB.frozen.txt`. **No rebuild or retrain** (triet, 2026-10-29): every model was trained with the current code, so a rebuild would only reproduce what exists, at ~10 min and with a risk to the baseline. The full rebuild moves to this phase's Checkpoint C.
 
 **Acceptance criteria:**
-- [ ] Frozen copies exist before any retrain
-- [ ] After the rebuild, `lgbm/AB` scores equal the frozen copy (max abs diff < 1e-9); if not, restore the copy and write down why
-- [ ] `git diff reports/` is empty (`train.py all` rewrites `phase2-tuning.csv` with identical rows); triet has reviewed the Phase 2 results and Checkpoint C is ticked in `phase2-plan.md`
+- [x] Frozen copies exist: 5,078,345 rows, one per `tx_id`, max abs diff 0 against the live scores; model file byte-identical
+- [x] Phase 2 Checkpoint C's rebuild box ticked as waived in `phase2-plan.md`
+- [x] triet has reviewed the Phase 2 results (`reports/phase2-results.md`, approved 2026-10-29); the last Phase 2 Checkpoint C box is ticked
 
-**Verification:** one SQL compare of `scores` against `scores_frozen_lgbm_AB` over all 5M `tx_id`s; `git diff --stat reports/`.
+**Verification:** one SQL compare of `scores` against `scores_frozen_lgbm_AB` over all 5M `tx_id`s; `cmp` of the model files.
 **Dependencies:** None
-**Files:** none (DuckDB tables; tick in `docs/phase2-plan.md`)
+**Files:** none (DuckDB table, model file copy; ticks in `docs/phase2-plan.md`)
 
-## Task 1: Evaluation harness for Phase 3 (S)
+**Outcome (2026-10-29):** backup done and verified (rows by split: train 3,248,921, val 965,524, test 862,792, tail 1,108). triet approved the Phase 2 results; Phase 2 is closed.
+
+## Task 1: Evaluation harness for Phase 3 (S) — DONE 2026-10-29
 
 **Description:**
 - **Fast bootstrap:** sort scores once; per resample, AP from weighted cumulative sums over the bootstrap counts (`bincount(indices)`), which is mathematically the same as AP on the resampled rows. It must work for iid and cluster resampling.
@@ -127,26 +129,28 @@ The laptop runs one heavy job at a time, so C goes first (cheap, de-risks the co
 - **Test guard:** `--final` takes `--models`, refuses any model already in `phase3-test-metrics.csv`, and pairs models as listed under Decisions.
 
 **Acceptance criteria:**
-- [ ] `metrics.py` self-check passes; the fast bootstrap gives the same CIs as the old one on the Phase 2 val scores (same seed, within 1e-6) for iid and cluster, and is ≥ 10× faster
-- [ ] `evaluate.py --split test --final --phase 3 --models lgbm/ABC` refuses `lgbm/AB` as a new model (it is only a pairing partner) and refuses a second run of the same model
-- [ ] Phase 2 report files byte-identical before and after (`git diff reports/` shows only new `phase3-*` files)
+- [x] `metrics.py` self-check passes; the fast bootstrap gives the same CIs as the old one on the Phase 2 val scores (same seed, within 1e-6) for iid and cluster, and is ≥ 10× faster *(measured 8×, see Outcome)*
+- [x] `evaluate.py --split test --final --phase 3 --models lgbm/ABC` refuses `lgbm/AB` as a new model (it is only a pairing partner) and refuses a second run of the same model
+- [x] Phase 2 report files byte-identical before and after (`git diff reports/` shows only new `phase3-*` files)
 
 **Verification:** `python src/metrics.py`; a dry run on val with `--phase 3`.
 **Dependencies:** T0
 **Files:** `src/metrics.py`, `src/evaluate.py`, `src/train.py`
+**Outcome:**- **Fast bootstrap:** for PR-AUC, `_bootstrap` sorts each score once and turns every resample into per-row draw counts (for clusters `bincount(pick)[codes]`, the same random draws as before). AP is computed only at score groups holding a positive. It is exact: max difference 1e-16 against sklearn on the resampled rows (iid and cluster), and the 1,000× val CI of `lgbm/AB` reproduces Phase 2 to the digit (0.3926 [0.3596, 0.4255]). Speed: 23 ms (iid) / 28 ms (cluster) per resample at 965k rows, against 187 / 226 ms, so **8×, short of the 10× target**. The rest is drawing and counting 965k indices plus one gather and cumulative sum, accepted. The self-check now asserts fast = slow, ties included.- **`evaluate.py`:** `--phase 3` writes `reports/phase3-*` and always adds cluster CIs, pairs and recall CIs. `--models` limits which models are evaluated. A phase 3 `--final` run needs `--models`, refuses any model already in Phase 2's test file (`lgbm/AB` is a pairing partner only), and refuses a second run while `phase3-{split}-metrics.csv` exists. Pairs are `PAIRS[3]`, used when both models have scores.- **`train.py`:** `--phase N` routes the tuning log to `reports/phaseN-tuning.csv`.- **Checks:** all guards exercised. A val dry run (`lgbm/AB`, `lgbm/A`, 200 resamples, about 29 s) wrote only `phase3-val-*`; md5 of all 14 Phase 2 report files unchanged; dry-run files deleted afterwards.
 
-## Task 2: Hand-made graph features, set C (M, leakage risk)
+## Task 2: Hand-made graph features, set C (M, leakage risk) — DONE 2026-10-29
 
 **Description:** Add `SET_C` to `features.py` as DuckDB window and join queries (list under Decisions), with frames ending 1 minute before the row. Extend the brute-force check (`features.py --check`) to C. Two leaky variants must fail: a frame ending at `CURRENT ROW`, and a 3-cycle that ignores time order (`ts(w→u)` allowed after `ts`).
 
 **Acceptance criteria:**
-- [ ] C columns for all 5,078,345 rows, no unexpected NULLs; build < 15 min at `memory_limit = 3GB`
-- [ ] Brute-force check: 0 mismatches on the sampled rows (hubs, same-minute ties, Sep 1, split edges, laundering); both leaky variants caught
-- [ ] Drift check (share of test accounts above the train max) < 1% per column; single-feature val PR-AUC < 0.5 for every C column
+- [x] C columns for all 5,078,345 rows, no unexpected NULLs; build < 15 min at `memory_limit = 3GB`
+- [x] Brute-force check: 0 mismatches on the sampled rows (hubs, same-minute ties, Sep 1, split edges, laundering); both leaky variants caught
+- [x] Drift check (share of test accounts above the train max) < 1% per column; single-feature val PR-AUC < 0.5 for every C column
 
 **Verification:** `python src/features.py`, then `python src/features.py --check`.
 **Dependencies:** T1
 **Files:** `src/features.py`
+**Outcome:**- **Columns:** 20 C columns (`SET_C` in `features.py`): `out_/in_cpty_{1h,24h,3d}`; `out_recv_{cnt,usd}_{1h,24h}`, `out_pass_ratio_24h`, `in_send_{cnt,usd}_{1h,24h}`, `in_pass_ratio_24h`; `pair_cnt_3d`, `pair_rev_cnt_3d`, `pair_min_since_last`; `cyc3_cnt_3d`. Pass-through comes from one 10M-row stream (each transaction as a send and a receipt). Pairs use one window per unordered pair with a direction flag. 3-cycles join from the sender's past receipts (62.8M candidates), with an ASOF match for an earlier v → w.- **Build:** `features.py` builds A + B + C in **4 min 16 s**. C runs as one temp table per step: as a single query it ran out of memory, and so did the stream window at 3 GB with all threads. **`features.py` now connects with `memory_limit = 1.5GB`, `threads = 4`.**- **Checks:** no unexpected NULLs; distinct counts ≤ totals and nested windows; drift ≤ 0.001% of test accounts. `--check` (2.5 min, now 277 rows including 40 CYCLE-scheme rows): **0 mismatches for B and C**; leaky variants caught: B frame 7,465 cells, B lag 144, C frame 2,389 (18 columns), C cycle-order 5 (`cyc3_cnt_3d`). Single-feature val PR-AUC: highest C column `pair_rev_cnt_3d` 0.021, all far below 0.07.- **Early signal (all splits):** 16% of laundering goes to a receiver the sender paid in the past 3d (licit 76%). 4.7% goes to someone who paid the sender back (licit 0.05%). Only 212 transactions close a 3-cycle, and 72 of them are laundering.
 
 ## Task 3: `lgbm/ABC` on val (S)
 
@@ -248,7 +252,7 @@ If `gnn/AB` beats `lgbm/AB` on val, expand `lgbm/ABG` into its own tasks (with t
 | GNN sees same-minute or future edges | High | Snapshots end at the hour start, asserted per snapshot; a leaky variant must fail (T4) |
 | GNN memorizes dirty accounts across the split cuts | High | No per-account embeddings or IDs; node input is a constant plus in-window degree |
 | Laptop runs out of RAM or time (5M edges) | High | Timing slice on CPU and MX550 before training (T4), with stated fallbacks, then Colab |
-| Retrain overwrites the frozen baseline | High | T0 backup; every task re-checks `lgbm/AB`; never run `train.py all` again after T0 |
+| Retrain overwrites the frozen baseline | High | T0 backup (`scores_frozen_lgbm_AB`, `lgbm_AB.frozen.txt`); every task re-checks `lgbm/AB`; never run `train.py all` or `train.py lgbm AB` before Checkpoint C |
 | Phase 2 report files silently rewritten | Med | `--phase 3` routing (T1); `git diff reports/` after every task |
 | "Graph" confused with "MLP vs trees" | Med | `mlp/AB` control; `gnn/AB − mlp/AB` isolates the graph |
 | "Graph information" confused with "the GNN" | Med | `lgbm/ABC` as the middle comparison |

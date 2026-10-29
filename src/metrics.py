@@ -37,8 +37,27 @@ def recall_by_pattern(y, flagged, pattern):
     return pos.groupby("p").f.agg(recall="mean", n="size")
 
 
+# AP of (y, s) for any row weights w (bootstrap draw counts), sorting s only once; same result as pr_auc on the resampled rows
+def _weighted_ap(y, s):
+    order = np.argsort(-np.asarray(s), kind="stable")
+    ys, ss = np.asarray(y)[order], np.asarray(s)[order]
+    ends = np.flatnonzero(np.r_[ss[1:] != ss[:-1], True])  # last row of each distinct score
+    pos = np.flatnonzero(ys == 1)
+    # recall only moves at score groups holding a positive, so precision is needed only there
+    ends_p = np.unique(ends[np.searchsorted(ends, pos)])
+    k = np.searchsorted(pos, ends_p, side="right") - 1
+    pos_rows = order[pos]
+
+    def ap(w):
+        tp = np.cumsum(w[pos_rows])[k]
+        seen = np.cumsum(w[order])[ends_p]
+        step = np.diff(np.r_[0, tp])
+        m = step > 0  # groups whose positives weren't drawn add nothing (and would be 0/0)
+        return float(np.sum(step[m] / tp[-1] * tp[m] / seen[m]))
+    return ap
+
+
 # clusters=None resamples rows; otherwise whole clusters (e.g. one laundering attempt) are drawn together
-# ponytail: re-sorts scores on every resample (~0.18 s at 900k rows, ~55 min for the T7 test run); sort once + weighted cumsum AP if Phase 3 needs many runs
 def _bootstrap(y, scores, metric, n, seed, clusters=None):
     y = np.asarray(y)
     rng = np.random.default_rng(seed)
@@ -47,12 +66,19 @@ def _bootstrap(y, scores, metric, n, seed, clusters=None):
         order = np.argsort(codes, kind="stable")
         sizes = np.bincount(codes)
         starts = np.concatenate([[0], np.cumsum(sizes)[:-1]])
+    fast = [_weighted_ap(y, s) for s in scores] if metric is pr_auc else None
     out = []
     for _ in range(n):
         if clusters is None:
             i = rng.integers(0, len(y), len(y))
         else:
             pick = rng.integers(0, len(sizes), len(sizes))
+        if fast:
+            # draw counts per row; for clusters every row of a picked cluster counts once per pick
+            w = np.bincount(i, minlength=len(y)) if clusters is None else np.bincount(pick, minlength=len(sizes))[codes]
+            out.append([ap(w) for ap in fast])
+            continue
+        if clusters is not None:
             lens = sizes[pick]
             # row positions of every picked cluster, concatenated
             i = order[np.repeat(starts[pick] - np.cumsum(lens) + lens, lens) + np.arange(lens.sum())]
@@ -103,6 +129,13 @@ def self_check():
     assert b.min() == 1
     v, lo_c, hi_c = bootstrap_ci(y[small], (y + noise)[small], n=200, clusters=(np.arange(20_000) // 50))
     assert lo_c <= v <= hi_c
+
+    # fast weighted AP must equal sklearn on the resampled rows, ties included (rounded scores), iid and cluster
+    tied = np.round(noise[small] + 0.3 * y[small], 2)
+    for cl in (None, np.arange(20_000) // 50):
+        fast = _bootstrap(y[small], [tied], pr_auc, 30, 0, cl)
+        slow = _bootstrap(y[small], [tied], lambda a, s: pr_auc(a, s), 30, 0, cl)
+        assert np.allclose(fast, slow, atol=1e-12), np.abs(fast - slow).max()
     print("metrics self-check passed")
 
 

@@ -17,7 +17,6 @@ FEATURE_SETS = {"A": SET_A, "AB": SET_A + SET_B}
 CATEGORICAL = ["payment_format", "payment_currency", "receiving_currency", "hour"]
 GRID = [{"num_leaves": nl, "learning_rate": lr, "min_child_samples": mcs}
         for nl in (15, 63) for lr in (0.05, 0.1) for mcs in (50, 500)]
-TUNING_LOG = ROOT / "reports/phase2-tuning.csv"
 MODELS_DIR = ROOT / "data/models"
 
 
@@ -70,7 +69,7 @@ def lr(con, feature_set):
 
 
 # small grid, early stopping on val average precision; the best run is saved and scores every row
-def lgbm(con, feature_set):
+def lgbm(con, feature_set, tuning_log):
     cols = FEATURE_SETS[feature_set]
     df = load(con, cols)
     tr, va = df[df.split == "train"], df[df.split == "val"]
@@ -85,10 +84,10 @@ def lgbm(con, feature_set):
         if best is None or ap > best[0]:
             best = (ap, m)
     log = pd.DataFrame(runs)
-    if TUNING_LOG.exists():
-        old = pd.read_csv(TUNING_LOG)
+    if tuning_log.exists():
+        old = pd.read_csv(tuning_log)
         log = pd.concat([old[old.feature_set != feature_set], log])
-    log.to_csv(TUNING_LOG, index=False)
+    log.to_csv(tuning_log, index=False)
     MODELS_DIR.mkdir(exist_ok=True)
     best[1].booster_.save_model(str(MODELS_DIR / f"lgbm_{feature_set}.txt"))
     save_scores(con, "lgbm", feature_set, df, predict(best[1], df[cols]))
@@ -96,18 +95,28 @@ def lgbm(con, feature_set):
 
 def main():
     con = duckdb.connect(str(DB), config={"memory_limit": "3GB"})
-    what = sys.argv[1:] or ["all"]
+    what = sys.argv[1:]
+    phase = "2"
+    # --phase N routes the LightGBM tuning log to reports/phaseN-tuning.csv
+    if "--phase" in what:
+        i = what.index("--phase")
+        phase = what[i + 1]
+        del what[i:i + 2]
+    tuning_log = ROOT / f"reports/phase{phase}-tuning.csv"
+    what = what or ["all"]
     if what == ["all"]:
         is_ach(con)
         for fs in FEATURE_SETS:
             lr(con, fs)
-            lgbm(con, fs)
+            lgbm(con, fs, tuning_log)
     elif what == ["is_ach"]:
         is_ach(con)
-    elif len(what) == 2 and what[0] in ("lr", "lgbm") and what[1] in FEATURE_SETS:
-        {"lr": lr, "lgbm": lgbm}[what[0]](con, what[1])
+    elif len(what) == 2 and what[0] == "lr" and what[1] in FEATURE_SETS:
+        lr(con, what[1])
+    elif len(what) == 2 and what[0] == "lgbm" and what[1] in FEATURE_SETS:
+        lgbm(con, what[1], tuning_log)
     else:
-        sys.exit("usage: train.py all | is_ach | lr <A|AB> | lgbm <A|AB>")
+        sys.exit("usage: train.py [--phase N] all | is_ach | lr <set> | lgbm <set>   (sets: " + ", ".join(FEATURE_SETS) + ")")
 
 
 if __name__ == "__main__":
