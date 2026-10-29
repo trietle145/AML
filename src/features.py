@@ -52,6 +52,7 @@ def build_a(con):
     """)
 
 
+# joins the 34 set-B columns onto `features`: per side and window count, USD sum/max, amount vs own mean, ACH share; plus min_since_last, has_history
 def build_b(con):
     inner, outer, windows = [], [], []
     for s, (acct, usd) in SIDES.items():
