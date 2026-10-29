@@ -1,4 +1,7 @@
+import sys
+
 import duckdb
+import numpy as np
 
 from load import DB, EXPECTED_ROWS
 
@@ -52,38 +55,113 @@ def build_a(con):
     """)
 
 
-# joins the 34 set-B columns onto `features`: per side and window count, USD sum/max, amount vs own mean, ACH share; plus min_since_last, has_history
-def build_b(con):
+# one row per transaction with the USD amounts and ACH flag the set-B windows aggregate
+BASE = """
+    SELECT t.tx_id, t.ts, t.day, t.from_acct, t.to_acct, t.is_laundering, (t.payment_format = 'ACH')::INT ach,
+           t.amount_paid * fp.usd_per_unit usd_paid, t.amount_received * fr.usd_per_unit usd_recv
+    FROM transactions t
+    JOIN fx_rates fp ON fp.currency = t.payment_currency
+    JOIN fx_rates fr ON fr.currency = t.receiving_currency
+"""
+
+
+# SELECT of tx_id + SET_B; leak="frame" (frame ends at CURRENT ROW) or "lag" are deliberately wrong, for the leakage check
+def b_query(leak=None):
+    end = "CURRENT ROW" if leak == "frame" else "INTERVAL 1 MINUTE PRECEDING"
     inner, outer, windows = [], [], []
     for s, (acct, usd) in SIDES.items():
         for w, interval in WINDOWS.items():
             # frame ends 1 minute before the row: whole-minute timestamps, so same-minute rows never see each other
-            windows.append(f"{s}_{w} AS (PARTITION BY {acct} ORDER BY ts "
-                           f"RANGE BETWEEN INTERVAL {interval} PRECEDING AND INTERVAL 1 MINUTE PRECEDING)")
+            windows.append(f"{s}_{w} AS (PARTITION BY {acct} ORDER BY ts RANGE BETWEEN INTERVAL {interval} PRECEDING AND {end})")
             inner += [f"COUNT(*) OVER {s}_{w} {s}_cnt_{w}", f"SUM({usd}) OVER {s}_{w} {s}_sum_{w}",
                       f"MAX({usd}) OVER {s}_{w} {s}_max_{w}", f"SUM(ach) OVER {s}_{w} {s}_ach_{w}"]
             outer += [f"{s}_cnt_{w}", f"COALESCE({s}_sum_{w}, 0) {s}_usd_sum_{w}", f"COALESCE({s}_max_{w}, 0) {s}_usd_max_{w}",
                       f"{usd} / NULLIF({s}_sum_{w} / {s}_cnt_{w}, 0) {s}_amt_vs_mean_{w}",
                       f"{s}_ach_{w} / NULLIF({s}_cnt_{w}, 0) {s}_ach_share_{w}"]
         # MAX(ts) over the 3d frame, never LAG: the previous row is usually in the same minute
-        inner.append(f"MAX(ts) OVER {s}_3d {s}_last_ts")
+        last = f"LAG(ts) OVER (PARTITION BY {acct} ORDER BY ts)" if leak == "lag" else f"MAX(ts) OVER {s}_3d"
+        inner.append(f"{last} {s}_last_ts")
         outer += [f"COALESCE(date_diff('minute', {s}_last_ts, ts), {CAP_MINUTES}) {s}_min_since_last",
                   f"({s}_cnt_3d > 0)::TINYINT {s}_has_history"]
-    con.execute(f"""
-        CREATE OR REPLACE TEMP TABLE features_b AS
-        WITH base AS (
-            SELECT t.tx_id, t.ts, t.from_acct, t.to_acct, (t.payment_format = 'ACH')::INT ach,
-                   t.amount_paid * fp.usd_per_unit usd_paid, t.amount_received * fr.usd_per_unit usd_recv
-            FROM transactions t
-            JOIN fx_rates fp ON fp.currency = t.payment_currency
-            JOIN fx_rates fr ON fr.currency = t.receiving_currency
-        ), w AS (
+    return f"""
+        WITH base AS ({BASE}), w AS (
             SELECT tx_id, ts, usd_paid, usd_recv, {", ".join(inner)}
             FROM base WINDOW {", ".join(windows)}
         )
         SELECT tx_id, {", ".join(outer)} FROM w
-    """)
+    """
+
+
+# joins the 34 set-B columns onto `features`: per side and window count, USD sum/max, amount vs own mean, ACH share; plus min_since_last, has_history
+def build_b(con):
+    con.execute(f"CREATE OR REPLACE TEMP TABLE features_b AS {b_query()}")
     con.execute("CREATE OR REPLACE TABLE features AS SELECT * FROM features JOIN features_b USING (tx_id) ORDER BY tx_id")
+
+
+# ~300 rows that stress the windows: random, hub accounts, same-minute ties, Sep 1, split boundaries, laundering
+SAMPLE = f"""
+    WITH b AS ({BASE}),
+    ties AS (SELECT tx_id, COUNT(*) OVER (PARTITION BY from_acct, ts) t_out, COUNT(*) OVER (PARTITION BY to_acct, ts) t_in FROM b),
+    hubs AS ((SELECT from_acct a FROM b GROUP BY 1 ORDER BY COUNT(*) DESC LIMIT 3)
+             UNION ALL (SELECT to_acct FROM b GROUP BY 1 ORDER BY COUNT(*) DESC LIMIT 3)),
+    picks AS (
+        (SELECT tx_id FROM b ORDER BY hash(tx_id) LIMIT 60)
+        UNION (SELECT tx_id FROM b WHERE from_acct IN (SELECT a FROM hubs) ORDER BY hash(tx_id) LIMIT 30)
+        UNION (SELECT tx_id FROM b WHERE to_acct IN (SELECT a FROM hubs) ORDER BY hash(tx_id) LIMIT 30)
+        UNION (SELECT tx_id FROM ties WHERE t_out > 1 ORDER BY hash(tx_id) LIMIT 30)
+        UNION (SELECT tx_id FROM ties WHERE t_in > 1 ORDER BY hash(tx_id) LIMIT 30)
+        UNION (SELECT tx_id FROM b WHERE day = DATE '2022-09-01' ORDER BY hash(tx_id) LIMIT 30)
+        UNION (SELECT tx_id FROM b WHERE ts BETWEEN TIMESTAMP '2022-09-06 22:00' AND TIMESTAMP '2022-09-07 02:00'
+                  OR ts BETWEEN TIMESTAMP '2022-09-08 22:00' AND TIMESTAMP '2022-09-09 02:00' ORDER BY hash(tx_id) LIMIT 40)
+        UNION (SELECT tx_id FROM b WHERE is_laundering = 1 ORDER BY hash(tx_id) LIMIT 50)
+    )
+    SELECT * FROM b WHERE tx_id IN (SELECT tx_id FROM picks)
+"""
+
+
+# set B recomputed row by row in pandas from raw rows with ts strictly earlier: the independent reference
+def brute_force(con, sample):
+    out = sample[["tx_id"]].copy()
+    for s, (acct, usd) in SIDES.items():
+        hist = con.sql(f"SELECT b.{acct} acct, b.ts, b.{usd} usd, b.ach FROM ({BASE}) b WHERE b.{acct} IN (SELECT {acct} FROM sample)").df()
+        groups = {a: (g.ts.to_numpy(), g.usd.to_numpy(), g.ach.to_numpy()) for a, g in hist.groupby("acct")}
+        cols = {}
+        for r in sample.itertuples():
+            ts, amt, ach = groups[getattr(r, acct)]
+            now = np.datetime64(r.ts)
+            for w, delta in {"1h": np.timedelta64(1, "h"), "24h": np.timedelta64(24, "h"), "3d": np.timedelta64(3, "D")}.items():
+                m = (ts < now) & (ts >= now - delta)
+                n, total = m.sum(), amt[m].sum()
+                mean = total / n if n else np.nan
+                vals = {"cnt": n, "usd_sum": total, "usd_max": amt[m].max() if n else 0,
+                        "amt_vs_mean": getattr(r, usd) / mean if n and mean else np.nan, "ach_share": ach[m].sum() / n if n else np.nan}
+                for st, v in vals.items():
+                    cols.setdefault(f"{s}_{st}_{w}", []).append(v)
+            m3 = (ts < now) & (ts >= now - np.timedelta64(3, "D"))
+            cols.setdefault(f"{s}_min_since_last", []).append((now - ts[m3].max()) // np.timedelta64(1, "m") if m3.any() else CAP_MINUTES)
+            cols.setdefault(f"{s}_has_history", []).append(int(m3.any()))
+        out = out.assign(**cols)
+    return out
+
+
+# number of (row, column) cells where got differs from the brute-force reference
+def mismatches(got, ref):
+    m = ref.merge(got, on="tx_id", suffixes=("_ref", ""))
+    return {c: int((~np.isclose(m[c].astype(float), m[c + "_ref"].astype(float), rtol=1e-6, equal_nan=True)).sum()) for c in SET_B}
+
+
+def leakage_check(con):
+    sample = con.sql(SAMPLE).df()
+    ref = brute_force(con, sample)
+    real = mismatches(con.sql(f"SELECT tx_id, {', '.join(SET_B)} FROM features WHERE tx_id IN (SELECT tx_id FROM sample)").df(), ref)
+    print(f"leakage check on {len(sample)} rows ({int(sample.is_laundering.sum())} laundering): {sum(real.values())} mismatched cells")
+    assert not any(real.values()), {c: v for c, v in real.items() if v}
+    # the check must be able to fail: both deliberately leaky variants have to be caught
+    for leak in ("frame", "lag"):
+        got = con.sql(f"SELECT * FROM ({b_query(leak)}) WHERE tx_id IN (SELECT tx_id FROM sample)").df()
+        bad = mismatches(got, ref)
+        print(f"  leaky variant '{leak}': {sum(bad.values())} mismatched cells in {sum(1 for v in bad.values() if v)} columns")
+        assert sum(bad.values()) > 0, f"check failed to catch the '{leak}' leak"
 
 
 def check_b(con):
@@ -142,6 +220,8 @@ def check_a(con):
 def main():
     # below free RAM (~4 GB of 16) so DuckDB spills to disk instead of failing the allocation
     con = duckdb.connect(str(DB), config={"memory_limit": "3GB"})
+    if "--check" in sys.argv:
+        return leakage_check(con)
     build_fx(con)
     build_a(con)
     check_a(con)

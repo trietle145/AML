@@ -97,22 +97,23 @@ All sequential. T2 is a thin end-to-end slice (features → model → metrics) s
 
 **Outcome:** 34 B columns (`SET_B` in `features.py`). Per side (`out` = sender's past sends, `in` = receiver's past receipts) and per window (1h, 24h, 3d): count, USD sum, USD max, amount vs own past mean, ACH share; plus `min_since_last` (capped at 4,320) and `has_history`. A + B build in about 33 s. Built-in checks: no unexpected NULLs; every account's first-ever minute on a side has count 0 and the cap, including same-minute peers; 1h ≤ 24h ≤ 3d counts. The drift check first failed on rows: 2.3% of test rows have `out_cnt_3d` above the train max, all from one hub, `070:100428660`. It sends about 59.8k on Sep 7–9 against at most 44.7k in any 3 train days, so it is a volume quirk, not time drift. The check now counts accounts: 0.0% for every column. Trees treat above-max values as the top bin, so the hub is harmless. Warm-up looks as expected: Sep 1 averages 342 past sends per row (3d) against 2,100–3,200 from Sep 2 on. DuckDB is capped at `memory_limit = 3GB`: the machine has about 4 GB free of 16, and the default 12.5 GiB limit made the final join fail an OS allocation instead of spilling to disk.
 
-## Task 4: Leakage check (S)
+## Task 4: Leakage check (S) — DONE 2026-10-29
 
 **Description:** A brute-force recomputation of B in pandas for ~300 sampled `tx_id`s (oversampling hubs, same-minute ties, Sep 1, split boundaries and laundering rows), using only raw rows with `ts` strictly earlier. Must equal the SQL values, "time since last" included.
 
 **Acceptance criteria:**
-- [ ] All sampled values match within float tolerance
-- [ ] Two deliberately leaky variants fail the check, proving the check can fail: a frame ending at `CURRENT ROW`, and "time since last" computed with `LAG`
+- [x] All sampled values match within float tolerance
+- [x] Two deliberately leaky variants fail the check, proving the check can fail: a frame ending at `CURRENT ROW`, and "time since last" computed with `LAG`
 
 **Verification:** `python src/features.py --check` (or an `assert` block in `features.py`) passes.
 
 **Dependencies:** T3
 **Files:** `src/features.py`
+**Outcome:** `python src/features.py --check` takes about 30 s. It recomputes set B in pandas for 244 sampled rows (fewer than 300 because the categories overlap) using only rows with `ts` strictly earlier: random, 3 top senders and 3 top receivers, same-minute ties on each side, Sep 1, ±2h around both split cuts, and 50 laundering rows. Result: **0 mismatched cells** across all 34 columns. Both leaky variants are caught: frame ending at `CURRENT ROW` gives 6,443 bad cells in 34 columns, and `LAG` for "time since last" gives 127 bad cells in the 2 `min_since_last` columns. Window SQL now lives in `b_query(leak=None)`, so the leaky variants share the real query.
 
 ## Checkpoint A (after T1–T4)
-- [ ] `python src/features.py` rebuilds A + B from the database in one command and its checks pass
-- [ ] LR on A is scored on val end-to-end
+- [x] `python src/features.py` rebuilds A + B from the database in one command and its checks pass
+- [x] LR on A is scored on val end-to-end
 
 ---
 
