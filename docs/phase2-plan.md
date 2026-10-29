@@ -162,23 +162,24 @@ All sequential. T2 is a thin end-to-end slice (features → model → metrics) s
 **Outcome:** findings are in `reports/phase2-results.md` (val section), with CSVs in `reports/` (`val-metrics`, `val-recall-by-pattern`, `val-importance`, `val-single-feature`, `val-history`). `evaluate.py` now saves its tables, and `--analyze` (about 12 s) does the val-only analysis. Results: no single feature above 0.07 (best 0.023), so nothing removed. `lgbm/AB` gain is 43% the sender's recent ACH share. Inside ACH rows only it still reaches PR-AUC 0.459 (base rate 0.0076), but 99.9% of what it flags is ACH, so non-ACH UNLISTED laundering (38.5% of UNLISTED) is never caught. 2.3% of rows (no sender or receiver history) hold 53% of laundering.
 
 ## Checkpoint B
-- [ ] Review val results with triet **before** touching test
+- [x] Review val results with triet **before** touching test (approved 2026-10-29)
 
 ---
 
-## Task 7: Score test once and write results (S)
+## Task 7: Score test once and write results (S) — DONE 2026-10-29
 
 **Description:** `python src/evaluate.py --split test --final`: all four models and the floor on test and tail (separate columns), val-chosen thresholds, 1,000× bootstrap CIs, paired bootstrap `lgbm/AB − lr/AB` and `lgbm/AB − lgbm/A`, recall by pattern with CIs. Plus the attempt-cluster bootstrap as a sensitivity column next to the locked iid CIs.
 
 **Acceptance criteria:**
-- [ ] `reports/phase2-results.md` has the headline test table, tail table, paired differences, per-pattern recall, and iid vs attempt-cluster CI widths side by side
-- [ ] Thresholds are the val ones; the test run happened once (logged with date in the results file)
-- [ ] `decisions.md` gets one line naming `lgbm/AB` (or whichever wins on val) as **the Phase 3 baseline**
+- [x] `reports/phase2-results.md` has the headline test table, tail table, paired differences, per-pattern recall, and iid vs attempt-cluster CI widths side by side
+- [x] Thresholds are the val ones; the test run happened once (logged with date in the results file)
+- [x] `decisions.md` gets one line naming `lgbm/AB` (or whichever wins on val) as **the Phase 3 baseline**
 
 **Verification:** numbers in the report regenerate from `scores` with one command.
 
 **Dependencies:** T6
 **Files:** `src/evaluate.py`, `reports/phase2-results.md`, `docs/decisions.md`
+**Outcome:** test and tail scored once on 2026-10-29, 17:05–18:12 (about 67 min, almost all of it bootstrap). Test PR-AUC: `lgbm/AB` 0.292 [0.261, 0.328] (cluster [0.232, 0.351]), `lgbm/A` 0.070, `lr/AB` 0.026, `lr/A` 0.015, floor 0.006. Paired `lgbm/AB − lgbm/A` +0.222 and `lgbm/AB − lr/AB` +0.266, both significant under iid and cluster CIs. UNLISTED recall is 2.4% (9 of 371). The tail can't separate the models (59% base rate, all 0.95–0.97). `lgbm/AB` is named the Phase 3 baseline in `decisions.md`. `metrics.py` gained `clusters=` (self-check confirms clusters stay whole); `evaluate.py --final` adds cluster CIs, paired CSVs and recall-by-pattern CIs, and refuses a second test or tail run.
 
 ## Checkpoint C: Phase 2 complete
 - [ ] `python src/features.py && python src/train.py all && python src/evaluate.py --split val` rebuilds everything

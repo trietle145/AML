@@ -1,24 +1,57 @@
 import argparse
+import datetime
 
 import duckdb
 import lightgbm as lgb
+import numpy as np
 import pandas as pd
 
 from load import DB, ROOT
-from metrics import (ALERTS_PER_DAY, best_f1_threshold, bootstrap_ci, f1_at, pr_auc, precision_recall_at_k_per_day,
-                     recall_by_pattern)
+from metrics import (ALERTS_PER_DAY, best_f1_threshold, bootstrap_ci, f1_at, paired_bootstrap_ci, pr_auc,
+                     precision_recall_at_k_per_day, recall_by_pattern)
 from train import CATEGORICAL, FEATURE_SETS, load
 
 REPORTS = ROOT / "reports"
+PAIRS = [("lgbm/AB", "lr/AB"), ("lgbm/AB", "lgbm/A")]
 
 
+# cluster = laundering attempt for listed-pattern rows, the row itself otherwise
 def load_split(con, split):
     return con.sql(f"""
         SELECT s.model || '/' || s.feature_set name, s.tx_id, s.score, t.is_laundering y, t.day,
-               CASE WHEN t.is_laundering = 1 THEN COALESCE(p.pattern_type, 'UNLISTED') END pattern
+               CASE WHEN t.is_laundering = 1 THEN COALESCE(p.pattern_type, 'UNLISTED') END pattern,
+               COALESCE('a' || p.attempt_id, 't' || s.tx_id) cluster
         FROM scores s JOIN transactions t USING (tx_id) LEFT JOIN tx_pattern p USING (tx_id)
         WHERE s.split = '{split}' ORDER BY name, s.tx_id
     """).df()
+
+
+# final run only: paired differences (iid and attempt-cluster) and recall-by-pattern CIs
+def final_extras(data, thresholds, split, boot):
+    by = {name: d for name, d in data.groupby("name")}
+    paired = []
+    for a, b in PAIRS:
+        da, db = by[a], by[b]
+        assert (da.tx_id.to_numpy() == db.tx_id.to_numpy()).all(), "paired scores must cover the same rows"
+        row = {"a": a, "b": b}
+        for kind, cl in (("iid", None), ("cluster", da.cluster.to_numpy())):
+            diff, lo, hi = paired_bootstrap_ci(da.y.to_numpy(), da.score.to_numpy(), db.score.to_numpy(), n=boot, clusters=cl)
+            row.update({"diff": diff, f"lo_{kind}": lo, f"hi_{kind}": hi})
+        paired.append(row)
+    paired = pd.DataFrame(paired)
+    paired.to_csv(REPORTS / f"{split}-paired.csv", index=False)
+    print("\npaired PR-AUC differences (a - b):")
+    print(paired.round(4).to_string(index=False))
+
+    rng, rows = np.random.default_rng(0), []
+    for name, d in by.items():
+        pos = d[d.y == 1]
+        for pattern, g in pos.groupby("pattern"):
+            hit = (g.score >= thresholds[name]).to_numpy()
+            b = hit[rng.integers(0, len(hit), (boot, len(hit)))].mean(axis=1)
+            rows.append({"model": name, "pattern": pattern, "n": len(hit), "recall": hit.mean(),
+                         "lo": np.percentile(b, 2.5), "hi": np.percentile(b, 97.5)})
+    pd.DataFrame(rows).to_csv(REPORTS / f"{split}-recall-by-pattern-ci.csv", index=False)
 
 
 # val only: what lgbm/AB relies on, whether any single feature is a leak, and how much is just "ACH"
@@ -67,23 +100,33 @@ def main():
     args = ap.parse_args()
     if args.analyze:
         return analyze(duckdb.connect(str(DB), read_only=True, config={"memory_limit": "3GB"}))
-    if args.split != "val" and not args.final:
+    final = args.split != "val"
+    if final and not args.final:
         ap.error(f"--split {args.split} needs --final: test and tail are scored once, after val review")
+    if final and (REPORTS / f"{args.split}-metrics.csv").exists():
+        ap.error(f"{args.split} was already scored (reports/{args.split}-metrics.csv exists); it is scored once")
 
     con = duckdb.connect(str(DB), read_only=True)
     # thresholds always come from val, then get applied unchanged to the evaluated split
     val = load_split(con, "val")
-    data = val if args.split == "val" else load_split(con, args.split)
-    rows, recalls = [], {}
+    data = val if not final else load_split(con, args.split)
+    rows, recalls, thresholds = [], {}, {}
     for name, d in data.groupby("name"):
         v = val[val.name == name]
         thr, _ = best_f1_threshold(v.y, v.score)
+        thresholds[name] = thr
         auc, lo, hi = bootstrap_ci(d.y, d.score, n=args.boot)
         p_k, r_k = precision_recall_at_k_per_day(d.y, d.score, d.day)
-        rows.append({"model": name, "pr_auc": auc, "ci_lo": lo, "ci_hi": hi, "f1": f1_at(d.y, d.score, thr),
-                     "threshold": thr, f"p@{ALERTS_PER_DAY}/day": p_k, f"r@{ALERTS_PER_DAY}/day": r_k})
+        row = {"model": name, "pr_auc": auc, "ci_lo": lo, "ci_hi": hi, "f1": f1_at(d.y, d.score, thr),
+               "threshold": thr, f"p@{ALERTS_PER_DAY}/day": p_k, f"r@{ALERTS_PER_DAY}/day": r_k}
+        if final:
+            _, row["ci_lo_cluster"], row["ci_hi_cluster"] = bootstrap_ci(d.y, d.score, n=args.boot, clusters=d.cluster.to_numpy())
+            row["scored_at"] = datetime.datetime.now().isoformat(timespec="minutes")
+        rows.append(row)
         by_pattern = recall_by_pattern(d.y, d.score >= thr, d.pattern)
         recalls[name] = by_pattern.recall
+    if final:
+        final_extras(data, thresholds, args.split, args.boot)
     metrics, patterns = pd.DataFrame(rows), pd.DataFrame(recalls).assign(n=by_pattern.n)
     metrics.to_csv(REPORTS / f"{args.split}-metrics.csv", index=False)
     patterns.to_csv(REPORTS / f"{args.split}-recall-by-pattern.csv", index_label="pattern")

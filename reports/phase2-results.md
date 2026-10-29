@@ -84,3 +84,67 @@ Each of the 42 A+B features was scored alone on val, both signs (categoricals sc
 
 - **Val numbers are tuned on val.** Early stopping, the grid and thresholds were all chosen there.
 - **Boundary leakage:** 64% of val pattern rows come from attempts that started in train (`docs/phase2-plan.md`, Risks). Test has a 2-day gap, and only 26% of its pattern rows come from attempts that started in train.
+
+## Test (Sep 9–10; 862,792 rows, 956 laundering): scored once on 2026-10-29 at 17:08–18:12
+
+`python src/evaluate.py --split test --final`. Thresholds are the val ones. Bootstrap: 1,000 resamples, both iid and attempt-cluster (one laundering attempt resampled as a unit). `evaluate.py` refuses to score test again while `reports/test-metrics.csv` exists. To regenerate the numbers, delete the `test-*.csv` files first; everything is seeded, so the numbers reproduce exactly.
+
+### Headline (`test-metrics.csv`)
+
+| Model | PR-AUC | iid 95% CI | Attempt-cluster 95% CI | F1 | P@500/day | R@500/day |
+|---|---|---|---|---|---|---|
+| is_ach (floor) | 0.0062 | [0.0058, 0.0067] | [0.0054, 0.0072] | 0.014 | 0.004 | 0.004 |
+| lr/A | 0.0146 | [0.0131, 0.0165] | [0.0120, 0.0177] | 0.034 | 0.031 | 0.032 |
+| lr/AB | 0.0259 | [0.0227, 0.0305] | [0.0211, 0.0327] | 0.066 | 0.066 | 0.069 |
+| lgbm/A | 0.0703 | [0.0591, 0.0864] | [0.0553, 0.0906] | 0.140 | 0.151 | 0.158 |
+| **lgbm/AB** | **0.2922** | **[0.2606, 0.3278]** | **[0.2315, 0.3511]** | **0.351** | **0.337** | **0.353** |
+
+- **Val was optimistic for `lgbm/AB`, as expected:** 0.393 on val, 0.292 on test. Val tuned early stopping, the grid and the threshold, and it had no gap after train. On a 500-alert queue, about a third of alerts are real and about 35% of test laundering is caught.
+- **The other models barely move between val and test** (`lgbm/A` 0.075 → 0.070, `lr/A` 0.0145 → 0.0146). Most of `lgbm/AB`'s drop is its own val optimism, and it is still the strongest model by far.
+- **Attempt-cluster CIs are about 1.3–2× wider than iid** (lgbm/AB 1.8×), so transactions within an attempt are correlated and the locked iid CIs understate uncertainty. Every conclusion below holds under both.
+
+### Paired differences (`test-paired.csv`, same rows, same resamples)
+
+| Comparison | PR-AUC difference | iid 95% CI | Attempt-cluster 95% CI | Significant? |
+|---|---|---|---|---|
+| lgbm/AB − lr/AB | +0.266 | [0.235, 0.300] | [0.207, 0.320] | yes, both |
+| lgbm/AB − lgbm/A | +0.222 | [0.192, 0.251] | [0.164, 0.272] | yes, both |
+
+- **Behavior features help, and so does the tree model.** Both CIs exclude 0 by a wide margin.
+
+### Recall by pattern at the val threshold (`test-recall-by-pattern.csv`; CIs for every model in `test-recall-by-pattern-ci.csv`)
+
+| Pattern | n | is_ach | lr/A | lr/AB | lgbm/A | lgbm/AB [95% CI] |
+|---|---|---|---|---|---|---|
+| BIPARTITE | 44 | 1.000 | 0.523 | 0.159 | 0.386 | 0.364 [0.227, 0.500] |
+| CYCLE | 55 | 1.000 | 0.382 | 0.164 | 0.273 | 0.418 [0.291, 0.545] |
+| FAN-IN | 57 | 1.000 | 0.421 | 0.105 | 0.386 | 0.561 [0.421, 0.684] |
+| FAN-OUT | 65 | 1.000 | 0.492 | 0.185 | 0.400 | 0.769 [0.646, 0.862] |
+| GATHER-SCATTER | 127 | 1.000 | 0.346 | 0.181 | 0.307 | 0.654 [0.567, 0.740] |
+| RANDOM | 43 | 1.000 | 0.488 | 0.233 | 0.256 | 0.302 [0.163, 0.442] |
+| SCATTER-GATHER | 110 | 1.000 | 0.391 | 0.200 | 0.282 | 0.727 [0.645, 0.809] |
+| STACK | 84 | 0.988 | 0.357 | 0.131 | 0.381 | 0.500 [0.393, 0.607] |
+| **UNLISTED** | **371** | 0.674 | 0.094 | 0.070 | 0.008 | **0.024 [0.008, 0.040]** |
+
+- **The same picture as val.** `lgbm/AB` is strongest on the fan and gather/scatter schemes (0.56–0.77), weaker on bipartite, random and cycles (0.30–0.42), and catches **9 of 371 UNLISTED (2.4%)**.
+- **Why `lr/A` sometimes recalls more** (bipartite 0.52, random 0.49): its val threshold flags far more rows, so its recall at that threshold is high but its precision is very low (F1 0.034). PR-AUC is the fair comparison.
+- **Per-pattern CIs are wide** (±0.1–0.15 on 43–127 rows), so recall by pattern is read as a direction, as `decisions.md` says.
+
+## Tail (Sep 11–18; 1,108 rows, 655 laundering, 59%): reported separately, never pooled with test
+
+| Model | PR-AUC | iid 95% CI | F1 @ val threshold |
+|---|---|---|---|
+| is_ach | 0.591 | [0.563, 0.620] | 0.743 |
+| lr/A | 0.953 | [0.932, 0.972] | 0.588 |
+| lr/AB | 0.956 | [0.939, 0.972] | 0.327 |
+| lgbm/A | 0.974 | [0.957, 0.989] | 0.507 |
+| lgbm/AB | 0.963 | [0.949, 0.976] | 0.818 |
+
+- **The tail can't separate the models.** With 59% laundering, even the floor scores 0.59 and every model gets 0.95–0.97. The paired differences straddle 0 (`lgbm/AB − lgbm/A` −0.011 [−0.023, 0.002]). Precision and recall at 500/day are meaningless here: there are fewer than 500 rows per day, so every row is an alert. This confirms the T7 split decision to keep the tail out of headline metrics.
+
+## Phase 2 conclusion
+
+- **The Phase 3 baseline is `lgbm/AB`:** test PR-AUC 0.292 [0.261, 0.328], F1 0.351, about 34% precision and 35% recall at 500 alerts/day. Recorded in `docs/decisions.md`; scores frozen in `scores`.
+- **What Phase 3 has to beat:**
+  - **On headline PR-AUC:** the gap from A to AB is +0.22 and significant.
+  - **On UNLISTED laundering:** the baseline catches 2.4%. Every listed scheme is ACH and the baseline has learned "ACH + new account + amount band", so this is the clearest test of whether graph features add something behavior can't.

@@ -87,3 +87,7 @@ Per-pattern test counts are small (43–127), so recall by pattern needs bootstr
 
 - **Warm-up:** Sep 1 has the least history for rolling features, and pattern laundering is low that day (94 rows) because attempts are only starting.
 - **Weekday mix:** test (Sep 9–10) includes one low-volume day (Sep 10, about 208k rows), like train's Sep 3–4. Val (Sep 7–8) has none.
+
+## Phase 3 baseline (from Phase 2, T7)
+
+**`lgbm/AB` is the Phase 3 baseline**: LightGBM on feature sets A + B (`data/models/lgbm_AB.txt`; 63 leaves, learning rate 0.05, min_child_samples 500, 237 trees; val threshold 0.1652). Test PR-AUC 0.292 [0.261, 0.328] (attempt-cluster CI [0.232, 0.351]). Its per-row scores stay frozen in `scores` (`model = 'lgbm'`, `feature_set = 'AB'`) for Phase 3's paired bootstrap. Phase 3 must not retrain or overwrite it. Full results: `reports/phase2-results.md`.

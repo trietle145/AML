@@ -37,25 +37,38 @@ def recall_by_pattern(y, flagged, pattern):
     return pos.groupby("p").f.agg(recall="mean", n="size")
 
 
-def _bootstrap(y, scores, metric, n, seed):
+# clusters=None resamples rows; otherwise whole clusters (e.g. one laundering attempt) are drawn together
+# ponytail: re-sorts scores on every resample (~0.18 s at 900k rows, ~55 min for the T7 test run); sort once + weighted cumsum AP if Phase 3 needs many runs
+def _bootstrap(y, scores, metric, n, seed, clusters=None):
     y = np.asarray(y)
     rng = np.random.default_rng(seed)
+    if clusters is not None:
+        codes = pd.factorize(np.asarray(clusters))[0]
+        order = np.argsort(codes, kind="stable")
+        sizes = np.bincount(codes)
+        starts = np.concatenate([[0], np.cumsum(sizes)[:-1]])
     out = []
     for _ in range(n):
-        i = rng.integers(0, len(y), len(y))
+        if clusters is None:
+            i = rng.integers(0, len(y), len(y))
+        else:
+            pick = rng.integers(0, len(sizes), len(sizes))
+            lens = sizes[pick]
+            # row positions of every picked cluster, concatenated
+            i = order[np.repeat(starts[pick] - np.cumsum(lens) + lens, lens) + np.arange(lens.sum())]
         out.append([metric(y[i], np.asarray(s)[i]) for s in scores])
     return np.array(out)
 
 
 # 95% CI of metric(score)
-def bootstrap_ci(y, score, metric=pr_auc, n=1000, seed=0):
-    b = _bootstrap(y, [score], metric, n, seed)[:, 0]
+def bootstrap_ci(y, score, metric=pr_auc, n=1000, seed=0, clusters=None):
+    b = _bootstrap(y, [score], metric, n, seed, clusters)[:, 0]
     return metric(y, score), *np.percentile(b, [2.5, 97.5])
 
 
 # 95% CI of metric(a) - metric(b) on the same resamples; "significantly better" = CI excludes 0
-def paired_bootstrap_ci(y, score_a, score_b, metric=pr_auc, n=1000, seed=0):
-    b = _bootstrap(y, [score_a, score_b], metric, n, seed)
+def paired_bootstrap_ci(y, score_a, score_b, metric=pr_auc, n=1000, seed=0, clusters=None):
+    b = _bootstrap(y, [score_a, score_b], metric, n, seed, clusters)
     d = b[:, 0] - b[:, 1]
     return metric(y, score_a) - metric(y, score_b), *np.percentile(d, [2.5, 97.5])
 
@@ -83,6 +96,13 @@ def self_check():
     assert lo > 0 and lo <= d <= hi
     v, lo, hi = bootstrap_ci(y[small], noise[small], n=200)
     assert lo <= v <= hi
+
+    # cluster resampling keeps clusters whole: rows of a picked cluster always come together
+    cl = np.arange(len(y)) // 5
+    b = _bootstrap(cl, [cl], lambda a, s: float(np.all(np.bincount(a, minlength=cl.max() + 1)[np.unique(a)] % 5 == 0)), 20, 0, cl)
+    assert b.min() == 1
+    v, lo_c, hi_c = bootstrap_ci(y[small], (y + noise)[small], n=200, clusters=(np.arange(20_000) // 50))
+    assert lo_c <= v <= hi_c
     print("metrics self-check passed")
 
 
