@@ -117,19 +117,34 @@ All sequential. T2 is a thin end-to-end slice (features → model → metrics) s
 
 ---
 
-## Task 5: LightGBM and LR on A and A+B (M)
+## Task 5: LightGBM and LR on A and A+B (M) — DONE 2026-10-29
 
 **Description:** Extend `train.py`: LightGBM with early stopping on val average precision, a small grid (num_leaves, learning rate, min_child_samples; ~10 runs), fixed seed; LR on A+B. Four scored models: `lr/A`, `lr/AB`, `lgbm/A`, `lgbm/AB`. Best LightGBM boosters saved to `data/models/`.
 
 **Acceptance criteria:**
-- [ ] All four models in `scores`, for every split
-- [ ] Grid results (params → val PR-AUC) logged to `reports/phase2-tuning.csv`
-- [ ] `lgbm/AB` val PR-AUC ≥ `lgbm/A`; if not, investigate before moving on
+- [x] All four models in `scores`, for every split
+- [x] Grid results (params → val PR-AUC) logged to `reports/phase2-tuning.csv`
+- [x] `lgbm/AB` val PR-AUC ≥ `lgbm/A`; if not, investigate before moving on
 
 **Verification:** `python src/evaluate.py --split val` shows all four plus the floor.
 
 **Dependencies:** T4
 **Files:** `src/train.py`, `requirements.txt`
+
+**Outcome (val, 1,000 resamples):**
+
+| Model | PR-AUC [95% CI] | F1 @ val threshold | P@500/day | R@500/day |
+|---|---|---|---|---|
+| is_ach | 0.0067 [0.0062, 0.0072] | 0.015 | 0.012 | 0.012 |
+| lr/A | 0.0145 [0.0130, 0.0161] | 0.036 | 0.019 | 0.018 |
+| lr/AB | 0.0348 [0.0302, 0.0418] | 0.068 | 0.055 | 0.053 |
+| lgbm/A | 0.0749 [0.0633, 0.0893] | 0.163 | 0.154 | 0.149 |
+| lgbm/AB | 0.3926 [0.3596, 0.4255] | 0.466 | 0.446 | 0.431 |
+
+- Best grid points: `lgbm/A` 15 leaves, lr 0.05, min_child 500, 102 trees; `lgbm/AB` 63 leaves, lr 0.05, min_child 500, 237 trees. Runs with `min_child_samples = 50` peak after 1–65 trees (overfitting), so more capacity or compute won't help. Grid: about 2 min (A) and 5 min (AB).
+- Recall at the val threshold for `lgbm/AB` is 0.37–0.83 on listed patterns (FAN-IN 0.75, GATHER-SCATTER 0.80, SCATTER-GATHER 0.83) but **0.008 on UNLISTED (3 of 379)**. Logistic regression stays far behind, so the signal lives in interactions.
+- No single B feature is a shortcut: the best single-feature val PR-AUC is 0.023 (`in_amt_vs_mean_3d`). The jump from A to AB comes mostly from accounts with no history: about 2.3% of val rows (no past sends or no past receipts) hold 53% of val laundering (551 of 1,036), a mule-account-like effect. It is legal (strictly past) and goes in the T6 write-up.
+- Memory: scores are written in 500k-row chunks, and the string columns load as `category` (the first A+B run ran out of RAM in `load`).
 
 ## Task 6: Validation analysis (S)
 
