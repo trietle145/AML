@@ -4,7 +4,7 @@
 
 ## Goal
 
-Answer the project's headline question: **does information about the past transaction network beat `lgbm/AB` on the same test transactions?** It is answered twice, with hand-made graph features (`lgbm/ABC`) and with a GNN (`gnn/AB`), plus an `mlp/AB` control that separates "graph" from "different learner". Phase 3 is done when the new models are scored once on test with a **paired bootstrap against the frozen `lgbm/AB` scores**, iid and attempt-cluster, plus recall by pattern with the focus on UNLISTED.
+Answer the project's headline question: **does information about the past transaction network beat `lgbm/AB` on the same test transactions?** It is answered twice, with hand-made graph features (`lgbm/ABC`) and with a GNN (`gnn/ABC`), plus an `mlp/ABC` control that separates "graph" from "different learner". Phase 3 is done when the new models are scored once on test with a **paired bootstrap against the frozen `lgbm/AB` scores**, iid and attempt-cluster, plus recall by pattern with the focus on UNLISTED.
 
 ## Where Phase 2 left us
 
@@ -27,14 +27,16 @@ Answer the project's headline question: **does information about the past transa
 
 - **Set C is kept** and comes before the GNN.
 - **Hardware:** CPU first. The machine has an **NVIDIA GeForce MX550 with 2 GB VRAM** (checked with `nvidia-smi`) next to Intel Iris Xe. The T4 timing slice times both and the faster one is used. Colab (the `CLAUDE.md` fallback) only if both miss the T4 budget.
-- **`lgbm/ABG` is built only if `gnn/AB` beats `lgbm/AB` on val**, with the stacking fix below. It gets expanded into full tasks only if that condition is met.
+- **`lgbm/ABG` is built only if `gnn/ABC` beats `lgbm/ABC` on val**, with the stacking fix below. It gets expanded into full tasks only if that condition is met.
+- **GNN head on A + B + C (triet, 2026-10-29).** The primary GNN run is `gnn/ABC`, compared with `lgbm/ABC`: does a GNN add anything beyond the hand-made graph features? Its control is `mlp/ABC`. `gnn/AB` and `mlp/AB` (head on A + B, compared with `lgbm/AB`) are **optional, if time allows**; the same flag in `gnn.py` switches the head's input.
+- **Git:** GNN work (T4–T6) lives on the `gnn` branch and is merged into `main` once it trains. Tag `phase2-baseline` marks commit `84fd040`, the last Phase 2 commit.
 
 ### Set C: hand-made graph features (first comparison)
 
 Why first:
 - **Cheap:** DuckDB windows like set B, minutes to build, LightGBM in about 5 min.
 - **Answers the headline question** with the Phase 2 machinery.
-- **A fair yardstick:** if `gnn/AB` beats `lgbm/AB` but not `lgbm/ABC`, the gain is "graph information", not "the GNN".
+- **A fair yardstick:** `gnn/ABC` is compared with `lgbm/ABC`, which has the same inputs. Only a gain over `lgbm/ABC` counts as "the GNN learned graph context the hand-made features miss".
 - **A fallback** if the GNN fails, and **explainable** for Phase 4 (SHAP on LightGBM).
 
 Columns (all strictly past, windows ≤ 3d, the `RANGE … INTERVAL 1 MINUTE PRECEDING` rule):
@@ -54,22 +56,22 @@ Columns (all strictly past, windows ≤ 3d, the `RANGE … INTERVAL 1 MINUTE PRE
   - **Architecture:** GINe-style (GIN with edge features in the message), with **reverse message passing** (separate weights for in- and out-edges); 2 layers, hidden 64.
   - **Node input:** a constant plus `log1p` in/out degree within the snapshot. No account IDs. Hubs have tens of thousands of edges per window, hence the log.
   - **Edge input:** set A, encoded once.
-- **Head:** for a target u → v, an MLP on `[h_u, h_v, A + B of the target]`, so `gnn/AB` sees what `lgbm/AB` sees plus learned graph context.
+- **Head:** for a target u → v, an MLP on `[h_u, h_v, A + B + C of the target]`, so `gnn/ABC` sees what `lgbm/ABC` sees plus learned graph context. (`gnn/AB`, optional: the same head on A + B.)
 - **Training:** train hours only; one snapshot is one step; the loss is on that hour's targets (about 22k rows, about 17 positives on average) with positive weighting; Adam; early stopping on **val PR-AUC**; 3 seeds, picked on val. Thresholds from val.
 - **Hard bans** (Phase 2's plus GNN-specific):
   - no learnable per-account embeddings (they memorize dirty accounts across the cut);
   - no labels or pattern data as inputs (no label propagation);
   - no `tx_id`, `split` or raw IDs.
-- **Upgrades named, not planned:** port numbering and ego IDs from the IBM paper, PNA instead of GIN, per-edge temporal sampling. Add only if `gnn/AB` is close to `lgbm/ABC` and there's time.
+- **Upgrades named, not planned:** port numbering and ego IDs from the IBM paper, PNA instead of GIN, per-edge temporal sampling. Add only if `gnn/ABC` is close to `lgbm/ABC` and there's time.
 - **Expectation, not a target:** the IBM paper's HI-Small minority F1 for GINe with its extensions is high (about 0.57, written from memory). **Check the exact figure and its time rule in the paper before quoting it.** Our strict past-only setup should come in lower.
 
-### `mlp/AB`: the control
+### `mlp/ABC`: the control
 
-The GNN's head trained alone: same MLP, same A + B input, same loop, with the graph embeddings left out (one flag in `gnn.py`). `gnn/AB − mlp/AB` is the effect of the learned graph context alone. `mlp/AB − lgbm/AB` is the cost or gain of an MLP instead of trees.
+The GNN's head trained alone: same MLP, same A + B + C input, same loop, with the graph embeddings left out (one flag in `gnn.py`). `gnn/ABC − mlp/ABC` is the effect of the learned graph context alone. `mlp/ABC − lgbm/ABC` is the cost or gain of an MLP instead of trees.
 
 ### `lgbm/ABG` (conditional; expanded only if opened)
 
-LightGBM on A + B + G, where G = the GNN's `[h_u, h_v]` for each transaction. It asks whether the GNN's graph signal survives inside the tree model.
+LightGBM on A + B + C + G, where G = the GNN's `[h_u, h_v]` for each transaction. It asks whether the GNN's graph signal survives inside the tree model.
 - **Stacking trap:** a GNN trained on train labels produces embeddings for train rows that are fitted to those labels. A LightGBM trained on them would overtrust them, and the score would be inflated.
 - **Fix:** time-split stacking. Train a separate GNN on Sep 1–4 only and use it for the embeddings of every row from Sep 5 on. Fit `lgbm/ABG` on Sep 5–6 (rows its GNN never saw labels for), early-stop on val, and score val, test and tail with the same GNN. It is weaker than full training (2 training days) and that is stated.
 - **Explainability is limited:** SHAP can rank embedding dimensions, but an investigator can't read them. A and B stay readable.
@@ -80,16 +82,17 @@ LightGBM on A + B + G, where G = the GNN's `[h_u, h_v]` for each transaction. It
 |---|---|---|
 | `lgbm/AB` | frozen baseline | — |
 | `lgbm/ABC` | LightGBM, Phase 2 grid, A + B + C | Do hand-made graph features help? |
-| `mlp/AB` | GNN head alone, A + B | Control for learner (MLP vs trees) |
-| `gnn/AB` | GNN on snapshots, head on A + B | Does learned graph context help? |
-| `lgbm/ABG` *(conditional)* | LightGBM on A + B + GNN embeddings, time-split stacked | Does the GNN's signal survive inside the explainable model? |
+| `mlp/ABC` | GNN head alone, A + B + C | Control for learner (MLP vs trees) |
+| `gnn/ABC` | GNN on snapshots, head on A + B + C | Does learned graph context add anything beyond hand-made graph features? |
+| `gnn/AB`, `mlp/AB` *(optional, if time)* | the same with the head on A + B | Same question against `lgbm/AB` |
+| `lgbm/ABG` *(conditional)* | LightGBM on A + B + C + GNN embeddings, time-split stacked | Does the GNN's signal survive inside the explainable model? |
 
-Paired test comparisons: `lgbm/ABC − lgbm/AB`, `gnn/AB − lgbm/AB`, `gnn/AB − lgbm/ABC`, `gnn/AB − mlp/AB` (plus `lgbm/ABG − lgbm/AB` if built). Significant = paired 95% CI excludes 0, under iid **and** attempt-cluster resampling. `lgbm/AB`'s side of each pair uses its **existing** test scores; it is never rescored.
+Paired test comparisons: `lgbm/ABC − lgbm/AB`, `gnn/ABC − lgbm/ABC`, `gnn/ABC − lgbm/AB`, `gnn/ABC − mlp/ABC` (plus `gnn/AB − lgbm/AB` and `lgbm/ABG − lgbm/ABC` if built). Significant = paired 95% CI excludes 0, under iid **and** attempt-cluster resampling. `lgbm/AB`'s side of each pair uses its **existing** test scores; it is never rescored.
 
 ### Outputs
 
 - `features` gets the C columns (`SET_C` in `features.py`); `FEATURE_SETS` gets `"ABC"`.
-- `src/gnn.py`: export, snapshots, model, training, and scoring into `scores` as `gnn/AB` and `mlp/AB`; checkpoints in `data/models/gnn_AB.pt` and `mlp_AB.pt`.
+- `src/gnn.py`: export, snapshots, model, training, and scoring into `scores` as `gnn/ABC` and `mlp/ABC`; checkpoints in `data/models/gnn_ABC.pt` and `mlp_ABC.pt`.
 - Reports: `reports/phase3-*.csv` (val, test, tail, `phase3-tuning.csv`) and `reports/phase3-results.md`. **Phase 2 report files are never touched:** after each task, `git diff reports/` shows only `phase3-*` files.
 
 ## Dependency graph
@@ -98,8 +101,8 @@ Paired test comparisons: `lgbm/ABC − lgbm/AB`, `gnn/AB − lgbm/AB`, `gnn/AB �
 T0 back up frozen baseline (done), close Phase 2 Checkpoint C
  └ T1 eval harness: --phase 3 routing, fast bootstrap, per-model test guard
     ├ T2 set C + leakage check ─ T3 lgbm/ABC on val ─────────────────────────────┐
-    └ T4 GNN export, snapshots, timing ─ T5 gnn/AB + mlp/AB ─ T6 GNN grid + val ─┴ Checkpoint B (triet) ─ T7 test once
-                                                               └ (lgbm/ABG only if gnn/AB > lgbm/AB on val)
+    └ T4 GNN export, snapshots, timing ─ T5 gnn/ABC + mlp/ABC ─ T6 GNN grid + val ─┴ Checkpoint B (triet) ─ T7 test once
+                                                               └ (lgbm/ABG only if gnn/ABC > lgbm/ABC on val)
 ```
 
 The laptop runs one heavy job at a time, so C goes first (cheap, de-risks the comparison) and then the GNN.
@@ -136,7 +139,12 @@ The laptop runs one heavy job at a time, so C goes first (cheap, de-risks the co
 **Verification:** `python src/metrics.py`; a dry run on val with `--phase 3`.
 **Dependencies:** T0
 **Files:** `src/metrics.py`, `src/evaluate.py`, `src/train.py`
-**Outcome:**- **Fast bootstrap:** for PR-AUC, `_bootstrap` sorts each score once and turns every resample into per-row draw counts (for clusters `bincount(pick)[codes]`, the same random draws as before). AP is computed only at score groups holding a positive. It is exact: max difference 1e-16 against sklearn on the resampled rows (iid and cluster), and the 1,000× val CI of `lgbm/AB` reproduces Phase 2 to the digit (0.3926 [0.3596, 0.4255]). Speed: 23 ms (iid) / 28 ms (cluster) per resample at 965k rows, against 187 / 226 ms, so **8×, short of the 10× target**. The rest is drawing and counting 965k indices plus one gather and cumulative sum, accepted. The self-check now asserts fast = slow, ties included.- **`evaluate.py`:** `--phase 3` writes `reports/phase3-*` and always adds cluster CIs, pairs and recall CIs. `--models` limits which models are evaluated. A phase 3 `--final` run needs `--models`, refuses any model already in Phase 2's test file (`lgbm/AB` is a pairing partner only), and refuses a second run while `phase3-{split}-metrics.csv` exists. Pairs are `PAIRS[3]`, used when both models have scores.- **`train.py`:** `--phase N` routes the tuning log to `reports/phaseN-tuning.csv`.- **Checks:** all guards exercised. A val dry run (`lgbm/AB`, `lgbm/A`, 200 resamples, about 29 s) wrote only `phase3-val-*`; md5 of all 14 Phase 2 report files unchanged; dry-run files deleted afterwards.
+
+**Outcome:**
+- **Fast bootstrap:** for PR-AUC, `_bootstrap` sorts each score once and turns every resample into per-row draw counts (for clusters `bincount(pick)[codes]`, the same random draws as before). AP is computed only at score groups holding a positive. It is exact: max difference 1e-16 against sklearn on the resampled rows (iid and cluster), and the 1,000× val CI of `lgbm/AB` reproduces Phase 2 to the digit (0.3926 [0.3596, 0.4255]). Speed: 23 ms (iid) / 28 ms (cluster) per resample at 965k rows, against 187 / 226 ms, so **8×, short of the 10× target**. The rest is drawing and counting 965k indices plus one gather and cumulative sum, accepted. The self-check now asserts fast = slow, ties included.
+- **`evaluate.py`:** `--phase 3` writes `reports/phase3-*` and always adds cluster CIs, pairs and recall CIs. `--models` limits which models are evaluated. A phase 3 `--final` run needs `--models`, refuses any model already in Phase 2's test file (`lgbm/AB` is a pairing partner only), and refuses a second run while `phase3-{split}-metrics.csv` exists. Pairs are `PAIRS[3]`, used when both models have scores.
+- **`train.py`:** `--phase N` routes the tuning log to `reports/phaseN-tuning.csv`.
+- **Checks:** all guards exercised. A val dry run (`lgbm/AB`, `lgbm/A`, 200 resamples, about 29 s) wrote only `phase3-val-*`; md5 of all 14 Phase 2 report files unchanged; dry-run files deleted afterwards.
 
 ## Task 2: Hand-made graph features, set C (M, leakage risk) — DONE 2026-10-29
 
@@ -150,7 +158,12 @@ The laptop runs one heavy job at a time, so C goes first (cheap, de-risks the co
 **Verification:** `python src/features.py`, then `python src/features.py --check`.
 **Dependencies:** T1
 **Files:** `src/features.py`
-**Outcome:**- **Columns:** 20 C columns (`SET_C` in `features.py`): `out_/in_cpty_{1h,24h,3d}`; `out_recv_{cnt,usd}_{1h,24h}`, `out_pass_ratio_24h`, `in_send_{cnt,usd}_{1h,24h}`, `in_pass_ratio_24h`; `pair_cnt_3d`, `pair_rev_cnt_3d`, `pair_min_since_last`; `cyc3_cnt_3d`. Pass-through comes from one 10M-row stream (each transaction as a send and a receipt). Pairs use one window per unordered pair with a direction flag. 3-cycles join from the sender's past receipts (62.8M candidates), with an ASOF match for an earlier v → w.- **Build:** `features.py` builds A + B + C in **4 min 16 s**. C runs as one temp table per step: as a single query it ran out of memory, and so did the stream window at 3 GB with all threads. **`features.py` now connects with `memory_limit = 1.5GB`, `threads = 4`.**- **Checks:** no unexpected NULLs; distinct counts ≤ totals and nested windows; drift ≤ 0.001% of test accounts. `--check` (2.5 min, now 277 rows including 40 CYCLE-scheme rows): **0 mismatches for B and C**; leaky variants caught: B frame 7,465 cells, B lag 144, C frame 2,389 (18 columns), C cycle-order 5 (`cyc3_cnt_3d`). Single-feature val PR-AUC: highest C column `pair_rev_cnt_3d` 0.021, all far below 0.07.- **Early signal (all splits):** 16% of laundering goes to a receiver the sender paid in the past 3d (licit 76%). 4.7% goes to someone who paid the sender back (licit 0.05%). Only 212 transactions close a 3-cycle, and 72 of them are laundering.
+
+**Outcome:**
+- **Columns:** 20 C columns (`SET_C` in `features.py`): `out_/in_cpty_{1h,24h,3d}`; `out_recv_{cnt,usd}_{1h,24h}`, `out_pass_ratio_24h`, `in_send_{cnt,usd}_{1h,24h}`, `in_pass_ratio_24h`; `pair_cnt_3d`, `pair_rev_cnt_3d`, `pair_min_since_last`; `cyc3_cnt_3d`. Pass-through comes from one 10M-row stream (each transaction as a send and a receipt). Pairs use one window per unordered pair with a direction flag. 3-cycles join from the sender's past receipts (62.8M candidates), with an ASOF match for an earlier v → w.
+- **Build:** `features.py` builds A + B + C in **4 min 16 s**. C runs as one temp table per step: as a single query it ran out of memory, and so did the stream window at 3 GB with all threads. **`features.py` now connects with `memory_limit = 1.5GB`, `threads = 4`.**
+- **Checks:** no unexpected NULLs; distinct counts ≤ totals and nested windows; drift ≤ 0.001% of test accounts. `--check` (2.5 min, now 277 rows including 40 CYCLE-scheme rows): **0 mismatches for B and C**; leaky variants caught: B frame 7,465 cells, B lag 144, C frame 2,389 (18 columns), C cycle-order 5 (`cyc3_cnt_3d`). Single-feature val PR-AUC: highest C column `pair_rev_cnt_3d` 0.021, all far below 0.07.
+- **Early signal (all splits):** 16% of laundering goes to a receiver the sender paid in the past 3d (licit 76%). 4.7% goes to someone who paid the sender back (licit 0.05%). Only 212 transactions close a 3-cycle, and 72 of them are laundering.
 
 ## Task 3: `lgbm/ABC` on val (S) — DONE 2026-10-29
 
@@ -164,12 +177,18 @@ The laptop runs one heavy job at a time, so C goes first (cheap, de-risks the co
 **Verification:** `python src/evaluate.py --split val --phase 3 --boot 200`.
 **Dependencies:** T2
 **Files:** `src/train.py`, `src/evaluate.py`
-**Outcome (val, 1,000 resamples):** `lgbm/ABC` PR-AUC **0.444** [0.413, 0.474] (cluster [0.381, 0.499]) vs `lgbm/AB` 0.393. **Paired +0.051 [0.026, 0.075], cluster [0.025, 0.079]: significant.** At the operating point the gain is small (F1 0.479 vs 0.466, P/R@500 0.456 / 0.440 vs 0.446 / 0.431), and per-pattern recall is mixed (FAN-IN 0.80 vs 0.75 up; BIPARTITE 0.35 vs 0.49, STACK 0.33 vs 0.49 down). **UNLISTED 2/379, non-ACH UNLISTED 0/146**; 100% of flagged rows are ACH. Inside ACH, PR-AUC is 0.517 vs 0.459. Gain importance: `in_cpty_3d` (fan-in) 37%, `out_ach_share_24h` 22%, `out_recv_*` (pass-through) 16%. No single feature above 0.023. `lgbm/AB` unchanged; Phase 2 files byte-identical.Changes made on the way:- **Model choice:** the selection rule picked a **1-tree** run (val 0.457, 63 coarse scores). With triet's OK, `train.py` now ignores runs with fewer than `MIN_TREES = 10` trees. It doesn't change the Phase 2 picks (102 and 237 trees). The chosen ABC run is 15 leaves, lr 0.05, min_child 500, 160 trees.- **Memory:** `train.py` loads train and val separately and scores split by split, with categories fixed from the whole table (tail has only ACH, so per-split categories would have shifted codes). DuckDB is capped at **700MB, 2 threads**: the Windows commit limit (RAM + 4 GB page file) left only ~2.9 GB for the process, so higher caps failed OS allocations.
+
+**Outcome (val, 1,000 resamples):** `lgbm/ABC` PR-AUC **0.444** [0.413, 0.474] (cluster [0.381, 0.499]) vs `lgbm/AB` 0.393. **Paired +0.051 [0.026, 0.075], cluster [0.025, 0.079]: significant.** At the operating point the gain is small (F1 0.479 vs 0.466, P/R@500 0.456 / 0.440 vs 0.446 / 0.431), and per-pattern recall is mixed (FAN-IN 0.80 vs 0.75 up; BIPARTITE 0.35 vs 0.49, STACK 0.33 vs 0.49 down). **UNLISTED 2/379, non-ACH UNLISTED 0/146**; 100% of flagged rows are ACH. Inside ACH, PR-AUC is 0.517 vs 0.459. Gain importance: `in_cpty_3d` (fan-in) 37%, `out_ach_share_24h` 22%, `out_recv_*` (pass-through) 16%. No single feature above 0.023. `lgbm/AB` unchanged; Phase 2 files byte-identical.
+
+Changes made on the way:
+- **Model choice:** the selection rule picked a **1-tree** run (val 0.457, 63 coarse scores). With triet's OK, `train.py` now ignores runs with fewer than `MIN_TREES = 10` trees. It doesn't change the Phase 2 picks (102 and 237 trees). The chosen ABC run is 15 leaves, lr 0.05, min_child 500, 160 trees.
+- **Commit `a87a8ae`** (the T3 commit) is titled "built features from the patterns.txt". That title is wrong: it holds these T3 changes only. No feature reads `patterns.txt`, `pattern_tx` or `tx_pattern`; pattern data is used only for evaluation and to pick leakage-check sample rows.
+- **Memory:** `train.py` loads train and val separately and scores split by split, with categories fixed from the whole table (tail has only ACH, so per-split categories would have shifted codes). DuckDB is capped at **700MB, 2 threads**: the Windows commit limit (RAM + 4 GB page file) left only ~2.9 GB for the process, so higher caps failed OS allocations.
 
 ## Checkpoint A (after T0–T3)
 - [x] Set C rebuilds in one command and passes its leakage check
 - [x] `lgbm/ABC` vs `lgbm/AB` on val written down; frozen baseline intact
-- [ ] Quick look with triet: is C worth keeping before the GNN starts
+- [x] Quick look with triet: is C worth keeping before the GNN starts (yes, kept, 2026-10-29)
 
 ---
 
@@ -190,13 +209,13 @@ The laptop runs one heavy job at a time, so C goes first (cheap, de-risks the co
 **Dependencies:** T1 (can start alongside T2)
 **Files:** `src/gnn.py`, `requirements.txt`
 
-## Task 5: Train `gnn/AB` and `mlp/AB`, score every row (M)
+## Task 5: Train `gnn/ABC` and `mlp/ABC`, score every row (M)
 
-**Description:** A training loop over train-hour snapshots in time order, early stopping on val PR-AUC (patience 3 epochs), fixed seed. Score every split (tail too, from earlier edges only) into `scores` with `train.py`'s `save_scores`. `mlp/AB` uses the same loop with the graph embeddings switched off.
+**Description:** A training loop over train-hour snapshots in time order, early stopping on val PR-AUC (patience 3 epochs), fixed seed. Score every split (tail too, from earlier edges only) into `scores` with `train.py`'s `save_scores`. `mlp/ABC` uses the same loop with the graph embeddings switched off.
 
 **Acceptance criteria:**
-- [ ] `gnn/AB` and `mlp/AB` each have one score for every `tx_id` (5,078,345), no NaNs
-- [ ] `gnn/AB` val PR-AUC beats `lgbm/A` (0.075); if not, debug before tuning (feature scaling, positive weight; `mlp/AB` shows what the head alone gets)
+- [ ] `gnn/ABC` and `mlp/ABC` each have one score for every `tx_id` (5,078,345), no NaNs
+- [ ] `gnn/ABC` val PR-AUC beats `lgbm/A` (0.075); if not, debug before tuning (feature scaling, positive weight; `mlp/ABC` shows what the head alone gets)
 - [ ] Runtime and peak memory logged; the same seed reproduces val PR-AUC within 0.005
 
 **Verification:** `python src/gnn.py train`, then `python src/evaluate.py --split val --phase 3 --boot 200`.
@@ -206,11 +225,11 @@ The laptop runs one heavy job at a time, so C goes first (cheap, de-risks the co
 ## Task 6: Small GNN grid and val analysis (S)
 
 **Description:** At most about 8 runs: W ∈ {24h, 3d if it fits}, layers ∈ {2, 3}, hidden ∈ {32, 64}, then 3 seeds of the best. Log to `reports/phase3-tuning.csv`. On val:
-- paired differences against `lgbm/AB`, `lgbm/ABC` and `mlp/AB`;
+- paired differences against `lgbm/AB`, `lgbm/ABC` and `mlp/ABC`;
 - recall by pattern, with UNLISTED split into ACH and non-ACH;
 - the share of flagged rows that are ACH.
 
-If `gnn/AB` beats `lgbm/AB` on val, expand `lgbm/ABG` into its own tasks (with the stacking fix) before Checkpoint B.
+If `gnn/ABC` beats `lgbm/ABC` on val, expand `lgbm/ABG` into its own tasks (with the stacking fix) before Checkpoint B.
 
 **Acceptance criteria:**
 - [ ] Tuning log saved; chosen config named with its seed spread
@@ -222,7 +241,7 @@ If `gnn/AB` beats `lgbm/AB` on val, expand `lgbm/ABG` into its own tasks (with t
 **Files:** `src/gnn.py`, `reports/phase3-results.md`
 
 ## Checkpoint B: review val with triet (hard stop)
-- [ ] Val results for `lgbm/ABC`, `mlp/AB`, `gnn/AB` (and `lgbm/ABG` if built) reviewed **before** touching test
+- [ ] Val results for `lgbm/ABC`, `mlp/ABC`, `gnn/ABC` (and `lgbm/ABG` if built) reviewed **before** touching test
 - [ ] triet confirms which models go to test
 
 ---
@@ -255,7 +274,7 @@ If `gnn/AB` beats `lgbm/AB` on val, expand `lgbm/ABG` into its own tasks (with t
 | Laptop runs out of RAM or time (5M edges) | High | Timing slice on CPU and MX550 before training (T4), with stated fallbacks, then Colab |
 | Retrain overwrites the frozen baseline | High | T0 backup (`scores_frozen_lgbm_AB`, `lgbm_AB.frozen.txt`); every task re-checks `lgbm/AB`; never run `train.py all` or `train.py lgbm AB` before Checkpoint C |
 | Phase 2 report files silently rewritten | Med | `--phase 3` routing (T1); `git diff reports/` after every task |
-| "Graph" confused with "MLP vs trees" | Med | `mlp/AB` control; `gnn/AB − mlp/AB` isolates the graph |
+| "Graph" confused with "MLP vs trees" | Med | `mlp/ABC` control; `gnn/ABC − mlp/ABC` isolates the graph |
 | "Graph information" confused with "the GNN" | Med | `lgbm/ABC` as the middle comparison |
 | `lgbm/ABG` inflated by stacking on train embeddings | Med | Time-split stacking (GNN on Sep 1–4, LightGBM on Sep 5–6), only if opened |
 | 3-cycle query too slow | Med | Join from the sender's past receipts; 3d → 24h if over 10 min (T2) |
@@ -268,7 +287,7 @@ If `gnn/AB` beats `lgbm/AB` on val, expand `lgbm/ABG` into its own tasks (with t
 Review against the code and the machine, then a full rewrite:
 - **Phase 2 files would have been overwritten** by `train.py`'s tuning log and `evaluate.py --split val`, in T0 and T3. Fixed by `--phase 3` routing (T1), and T0 compares scores without a val run.
 - **3-cycles** are time-ordered and joined from the sender's past receipts (bounded in-degree), not the receiver's sends (hub fan-out).
-- **`mlp/AB` control** added, so a GNN-vs-trees difference isn't read as a graph effect.
+- **`mlp/ABC` control** added, so a GNN-vs-trees difference isn't read as a graph effect.
 - **`lgbm/ABG`** stays conditional (triet), with the stacking trap and a time-split fix written down. It gets expanded into tasks only if opened.
 - **Checked on the machine:** an MX550 with 2 GB exists (T4 benches CPU and GPU), and `COUNT(DISTINCT)` over `RANGE` windows works in DuckDB 2.0.
 - **Smaller fixes:** log-scaled node degrees; pairing reuses `lgbm/AB`'s existing test scores; the paper's F1 marked "verify before quoting"; Phase 2 test runtime corrected to 67 min.

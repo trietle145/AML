@@ -14,7 +14,8 @@ from train import CATEGORICAL, FEATURE_SETS, load
 REPORTS = ROOT / "reports"
 # phase -> (new model, partner) pairs; a pair is used when both have scores
 PAIRS = {2: [("lgbm/AB", "lr/AB"), ("lgbm/AB", "lgbm/A")],
-         3: [("lgbm/ABC", "lgbm/AB"), ("gnn/AB", "lgbm/AB"), ("gnn/AB", "lgbm/ABC"), ("gnn/AB", "mlp/AB"), ("lgbm/ABG", "lgbm/AB")]}
+         3: [("lgbm/ABC", "lgbm/AB"), ("gnn/ABC", "lgbm/ABC"), ("gnn/ABC", "lgbm/AB"), ("gnn/ABC", "mlp/ABC"),
+             ("gnn/AB", "lgbm/AB"), ("gnn/AB", "mlp/AB"), ("lgbm/ABG", "lgbm/ABC")]}
 
 
 # cluster = laundering attempt for listed-pattern rows, the row itself otherwise
