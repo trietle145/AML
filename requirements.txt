@@ -1,3 +1,4 @@
+--extra-index-url https://download.pytorch.org/whl/cu130
 duckdb==2.0.0
 jupyter==1.1.1
 lightgbm==4.7.0
@@ -5,3 +6,5 @@ matplotlib==3.11.2
 pandas==3.1.0
 pyarrow==26.0.0
 scikit-learn==1.9.1
+torch==2.14.1+cu130
+torch_geometric==2.8.1
