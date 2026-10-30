@@ -26,6 +26,10 @@ SET_C = [f"{s}_cpty_{w}" for s in SIDES for w in WINDOWS] + \
         ["pair_cnt_3d", "pair_rev_cnt_3d", "pair_min_since_last", "cyc3_cnt_3d"]
 NULLABLE_C = ["out_pass_ratio_24h", "in_pass_ratio_24h"]
 
+# set D: how unusual this amount is against the same account's own recent amounts on that side, strictly past
+D_WINDOWS = {"24h": "24 HOUR", "3d": "3 DAY"}
+SET_D = [f"{s}_amt_{st}_{w}" for s in SIDES for w in D_WINDOWS for st in ("z", "vs_med", "vs_max")]
+
 
 # usd_per_unit per currency, from train-split USD -> X conversions (tight); X -> USD only cross-checks
 def build_fx(con):
@@ -74,7 +78,8 @@ BASE = """
 """
 
 
-# SELECT of tx_id + SET_B; leak="frame" (frame ends at CURRENT ROW) or "lag" are deliberately wrong, for the leakage check
+# SELECT of tx_id + SET_B; leak= builds a leaky version on purpose, which the leakage check must catch:
+# "frame" (frame ends at CURRENT ROW, so it sees same-minute rows) or "lag" (previous row, often the same minute)
 def b_query(leak=None):
     end = "CURRENT ROW" if leak == "frame" else "INTERVAL 1 MINUTE PRECEDING"
     inner, outer, windows = [], [], []
@@ -107,7 +112,8 @@ def build_b(con):
     con.execute("CREATE OR REPLACE TABLE features AS SELECT * FROM features JOIN features_b USING (tx_id) ORDER BY tx_id")
 
 
-# builds set C step by step into temp tables, returns the SELECT of tx_id + SET_C; leak="frame" (frames end at CURRENT ROW) or "cycle" (3-cycles ignore time order) are deliberately wrong
+# builds set C step by step into temp tables, returns the SELECT of tx_id + SET_C; leak= builds a leaky version on purpose,
+# which the leakage check must catch: "frame" (frames end at CURRENT ROW, so they see same-minute rows) or "cycle" (3-cycles ignore time order)
 def c_query(con, leak=None, where=None):
     end = "CURRENT ROW" if leak == "frame" else "INTERVAL 1 MINUTE PRECEDING"
     cpty, cpty_w = [], []
@@ -175,6 +181,35 @@ def c_query(con, leak=None, where=None):
 def build_c(con):
     con.execute(f"CREATE OR REPLACE TEMP TABLE features_c AS {c_query(con)}")
     con.execute("CREATE OR REPLACE TABLE features AS SELECT * FROM features JOIN features_c USING (tx_id) ORDER BY tx_id")
+
+
+# SELECT of tx_id + SET_D; leak="frame" builds a leaky version on purpose (frame ends at CURRENT ROW, so it sees
+# same-minute rows), which the leakage check must catch
+def d_query(leak=None, where=None):
+    end = "CURRENT ROW" if leak == "frame" else "INTERVAL 1 MINUTE PRECEDING"
+    inner, outer, windows = [], [], []
+    for s, (acct, usd) in SIDES.items():
+        for w, interval in D_WINDOWS.items():
+            windows.append(f"{s}_{w} AS (PARTITION BY {acct} ORDER BY ts RANGE BETWEEN INTERVAL {interval} PRECEDING AND {end})")
+            inner += [f"AVG({usd}) OVER {s}_{w} {s}_mean_{w}", f"STDDEV_SAMP({usd}) OVER {s}_{w} {s}_sd_{w}",
+                      f"MEDIAN({usd}) OVER {s}_{w} {s}_med_{w}", f"MAX({usd}) OVER {s}_{w} {s}_max_{w}"]
+            # NULL without history; z also NULL with < 2 past amounts or all past amounts equal
+            outer += [f"({usd} - {s}_mean_{w}) / NULLIF({s}_sd_{w}, 0) {s}_amt_z_{w}",
+                      f"{usd} / NULLIF({s}_med_{w}, 0) {s}_amt_vs_med_{w}", f"{usd} / NULLIF({s}_max_{w}, 0) {s}_amt_vs_max_{w}"]
+    return f"""
+        WITH base AS ({BASE} {'WHERE ' + where if where else ''}), w AS (
+            SELECT tx_id, usd_paid, usd_recv, {", ".join(inner)} FROM base WINDOW {", ".join(windows)}
+        )
+        SELECT tx_id, {", ".join(outer)} FROM w
+    """
+
+
+# joins the 12 set-D columns onto `features`, replacing them if already there (so `features.py d` reruns alone)
+def build_d(con):
+    con.execute(f"CREATE OR REPLACE TEMP TABLE features_d AS {d_query()}")
+    old = [c for c in SET_D if c in {r[0] for r in con.execute("DESCRIBE features").fetchall()}]
+    keep = f"* EXCLUDE ({', '.join(old)})" if old else "*"
+    con.execute(f"CREATE OR REPLACE TABLE features AS SELECT {keep} FROM features JOIN features_d USING (tx_id) ORDER BY tx_id")
 
 
 # ~300 rows that stress the windows: random, hub accounts, same-minute ties, Sep 1, split boundaries, laundering
@@ -258,14 +293,50 @@ def brute_force_c(con, sample):
     return pd.DataFrame(rows)
 
 
+# set D recomputed row by row in pandas from raw rows with ts strictly earlier
+def brute_force_d(con, sample):
+    out = sample[["tx_id"]].copy()
+    for s, (acct, usd) in SIDES.items():
+        hist = con.sql(f"SELECT b.{acct} acct, b.ts, b.{usd} usd FROM ({BASE}) b WHERE b.{acct} IN (SELECT {acct} FROM sample)").df()
+        groups = {a: (g.ts.to_numpy(), g.usd.to_numpy()) for a, g in hist.groupby("acct")}
+        cols = {}
+        for r in sample.itertuples():
+            ts, amt = groups[getattr(r, acct)]
+            now, x = np.datetime64(r.ts), getattr(r, usd)
+            for w, delta in {"24h": np.timedelta64(24, "h"), "3d": np.timedelta64(3, "D")}.items():
+                a = amt[(ts < now) & (ts >= now - delta)]
+                sd, med, mx = (a.std(ddof=1) if len(a) > 1 else np.nan), (np.median(a) if len(a) else np.nan), (a.max() if len(a) else np.nan)
+                cols.setdefault(f"{s}_amt_z_{w}", []).append((x - a.mean()) / sd if len(a) > 1 and sd else np.nan)
+                cols.setdefault(f"{s}_amt_vs_med_{w}", []).append(x / med if med else np.nan)
+                cols.setdefault(f"{s}_amt_vs_max_{w}", []).append(x / mx if mx else np.nan)
+        out = out.assign(**cols)
+    return out
+
+
 # number of (row, column) cells where got differs from the brute-force reference
 def mismatches(got, ref, cols=SET_B):
     m = ref.merge(got, on="tx_id", suffixes=("_ref", ""))
     return {c: int((~np.isclose(m[c].astype(float), m[c + "_ref"].astype(float), rtol=1e-6, equal_nan=True)).sum()) for c in cols}
 
 
-def leakage_check(con):
+def leakage_check_d(con, sample):
+    ref = brute_force_d(con, sample)
+    real = mismatches(con.sql(f"SELECT tx_id, {', '.join(SET_D)} FROM features WHERE tx_id IN (SELECT tx_id FROM sample)").df(), ref, SET_D)
+    print(f"set D leakage check on {len(sample)} rows: {sum(real.values())} mismatched cells")
+    assert not any(real.values()), {c: v for c, v in real.items() if v}
+    con.register("accts", pd.DataFrame({"a": sorted(set(sample.from_acct) | set(sample.to_acct))}))
+    near = "t.from_acct IN (SELECT a FROM accts) OR t.to_acct IN (SELECT a FROM accts)"
+    got = con.sql(f"SELECT * FROM ({d_query('frame', near)}) WHERE tx_id IN (SELECT tx_id FROM sample)").df()
+    bad = mismatches(got, ref, SET_D)
+    print(f"  leaky variant 'frame': {sum(bad.values())} mismatched cells in {sum(1 for v in bad.values() if v)} columns")
+    assert sum(bad.values()) > 0, "check failed to catch the 'frame' leak"
+
+
+def leakage_check(con, only_d=False):
     sample = con.sql(SAMPLE).df()
+    leakage_check_d(con, sample)
+    if only_d:
+        return
     ref = brute_force(con, sample)
     real = mismatches(con.sql(f"SELECT tx_id, {', '.join(SET_B)} FROM features WHERE tx_id IN (SELECT tx_id FROM sample)").df(), ref)
     print(f"leakage check on {len(sample)} rows ({int(sample.is_laundering.sum())} laundering): {sum(real.values())} mismatched cells")
@@ -327,6 +398,25 @@ def check_c(con):
     """).df().to_string(index=False))
 
 
+def check_d(con):
+    assert_nulls(con, SET_D, SET_D)
+    assert_no_drift(con, SET_D)
+    # overlap with set B's amount-vs-own-mean (rank correlation on val, rows where both exist): > 0.95 would be a duplicate
+    pairs = [(d, f"{d[:d.index('_')]}_amt_vs_mean_{d.rsplit('_', 1)[1]}") for d in SET_D]
+    corr = con.sql(f"""SELECT {', '.join(f"corr(rank_{i}_a, rank_{i}_b) c{i}" for i in range(len(pairs)))} FROM (
+                           SELECT {', '.join(f"percent_rank() OVER (ORDER BY {a}) rank_{i}_a, percent_rank() OVER (ORDER BY {b}) rank_{i}_b"
+                                             for i, (a, b) in enumerate(pairs))}
+                           FROM features JOIN transactions USING (tx_id) WHERE split = 'val' AND {' AND '.join(f'{a} IS NOT NULL AND {b} IS NOT NULL' for a, b in pairs)})
+                    """).fetchall()[0]
+    corr = pd.Series(corr, index=[f"{a} ~ {b}" for a, b in pairs]).sort_values(ascending=False)
+    print("rank correlation with set B's amt_vs_mean (val):")
+    print(corr.round(3).to_string())
+    print(con.sql(f"""
+        SELECT t.is_laundering, {', '.join(f'ROUND(MEDIAN({c}), 3) {c}' for c in SET_D if '_3d' in c)}
+        FROM features f JOIN transactions t USING (tx_id) GROUP BY 1 ORDER BY 1
+    """).df().to_string(index=False))
+
+
 def check_b(con):
     assert_nulls(con, SET_B, NULLABLE_B)
     for s, (acct, _) in SIDES.items():
@@ -366,11 +456,12 @@ def check_a(con):
 
 
 def main():
-    # well below free RAM (~3.7 GB of 16) so DuckDB spills to disk instead of failing the allocation;
-    # set C's 10M-row stream window fails at 3GB / all threads and runs at 1.5GB / 4 threads
     con = duckdb.connect(str(DB), config={"memory_limit": "1.5GB", "threads": 4})
     if "--check" in sys.argv:
-        return leakage_check(con)
+        return leakage_check(con, only_d="d" in sys.argv)
+    if "d" in sys.argv:
+        build_d(con)
+        return check_d(con)
     build_fx(con)
     build_a(con)
     check_a(con)
@@ -378,7 +469,9 @@ def main():
     check_b(con)
     build_c(con)
     check_c(con)
-    print(f"features: {EXPECTED_ROWS:,} rows, sets A / B / C = {len(SET_A)} / {len(SET_B)} / {len(SET_C)} columns")
+    build_d(con)
+    check_d(con)
+    print(f"features: {EXPECTED_ROWS:,} rows, sets A / B / C / D = {len(SET_A)} / {len(SET_B)} / {len(SET_C)} / {len(SET_D)} columns")
 
 
 if __name__ == "__main__":

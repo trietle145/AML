@@ -78,14 +78,15 @@ Checkpoint A ─ T8 ensemble ─┐
 ### Near-miss contributions (throwaway check, 2026-10-31)
 Per-row TreeSHAP contributions of `lgbm/ABC` (`pred_contrib`) on val laundering rows + 20k licit, caught = inside the day's top 500. Missed STACK / BIPARTITE / CYCLE / RANDOM rows sit a median **1.1–1.9 log-odds below the cut** (UNLISTED 2.9). Within each pattern, caught rows have **larger amounts, and amounts far above the receiver's usual** (`in_amt_vs_mean_24h` median 9.5× caught vs 3.6× missed for STACK + BIPARTITE); fan-in/out push 45–60% of missed rows down, because each transfer in these schemes looks one-to-one. UNLISTED: nothing separates caught from missed. **Caveat:** correlated features split credit into large opposite values (e.g. `pair_min_since_last` −2 to −16 vs `pair_cnt_3d` +1 to +2, both "first payment on this pair"; max |contribution| 139), so contributions must be summed per feature group before use (Task 10). **Steers Task 6 towards amount-vs-own-usual features.**
 
-### Task 6: Set D, account amount and timing statistics (S, leakage risk)
+### Task 6: Set D, account amount and timing statistics (S, leakage risk) — amount part DONE 2026-11-01
 **Description:** priority from the near-miss check above: **how unusual this amount is for this sender and for this receiver** (amount vs the account's own median and spread over 24h / 3d, per direction; z-score or ratio), extending the existing `*_amt_vs_mean_24h`. Then GFP's "vertex statistics" group (+8.2 F1 in their ablation), restricted to what set B lacks: for sender and receiver, in and out, over 24h: variance, skew and kurtosis of amounts, and of **gaps between** incident transactions (never raw timestamps, which grow with absolute time). Plus the old draft's forwarding speed (minutes from an account's last receipt to this send) and structuring (sends just under $10k / $20k in 3d). Check overlap with set B first and drop duplicates.
 **Acceptance:**
-- [ ] Brute-force check 0 mismatches; leaky variant fails; drift: distribution on test within 1% of val on accounts seen in both
-- [ ] List of B columns each new one overlaps with (correlation > 0.95 → dropped)
+- [x] Brute-force check 0 mismatches; leaky variant fails; drift: distribution on test within 1% of val on accounts seen in both
+- [x] List of B columns each new one overlaps with (correlation > 0.95 → dropped)
 **Verification:** `features.py --check` passes.
 **Dependencies:** none
 **Files:** `src/features.py`
+**Outcome:** built the amount part only: `SET_D` = 12 columns, per side (sender's past sends / receiver's past receipts) and window (24h, 3d): `amt_z` (z-score vs own mean and sd), `amt_vs_med`, `amt_vs_max`, strictly earlier rows (`d_query`, `features.py d` builds D alone, ~1 min). `features.py --check d`: 0 mismatched cells on 277 stress rows; leaky variant (frame ends at the current row) caught with 2,205 bad cells in all 12 columns. Drift: no test account above the train max. Overlap with B's `amt_vs_mean`: rank correlation 0.63–0.94 (highest `amt_vs_max`), none > 0.95, all kept. Medians laundering vs licit: `in_amt_vs_med_3d` 1.99 vs 1.00, `in_amt_vs_max_3d` 0.72 vs 0.32, `out_amt_vs_med_3d` 1.40 vs 1.00. **Skipped for now:** timing-gap moments, forwarding speed and structuring (no support in the near-miss check; add only if Task 7 shows the amount part helps).
 
 ### Task 7: `lgbm/ABCD` on val (S)
 **Description:** add `ABCD` (and, if Task 6 is large, `ABC+cycles` / `ABC+sg` ablations) to `FEATURE_SETS`; train with the Phase 2 grid; evaluate on val, paired against `lgbm/ABC`.
