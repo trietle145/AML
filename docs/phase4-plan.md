@@ -105,11 +105,14 @@ Per-row TreeSHAP contributions of `lgbm/ABC` (`pred_contrib`) on val laundering 
 
 **Checkpoint A outcome (triet, 2026-11-01): no.** Set D didn't improve `lgbm/ABC` (Task 7); long cycles and bicliques/scatter-gather were dropped before building because they reach almost no near-miss rows (Tasks 3, 5). **Base stays `lgbm/ABC`; no more feature work.** Set D lives only on branch `feature-set-d` (archived, not merged); Phase 4 continues from `main` on branch `ensemble` with Task 8.
 
-### Task 8: Ensemble (S)
+### Task 8: Ensemble (S) — DONE 2026-11-01, fails the keep rule
 **Description:** rank-average the best LightGBM (`lgbm/ABCD` or `lgbm/ABC`) with the MLP. They're strong on different patterns (LightGBM on FAN-IN and STACK, the MLP on FAN-OUT and gather/scatter), so the blend may help at 500/day. Uses the existing `mlp_s0–s2` scores (mean over seeds, no seed picked on val); retraining the MLP on set D needs Colab and is out of scope unless the blend is promising.
 **Acceptance:** ensemble kept only if its paired val gain over the best single model excludes 0 under both CIs, **and** P/R at 500/day doesn't drop.
 **Dependencies:** Checkpoint A
 **Files:** `src/evaluate.py` or `src/train.py` (writes `scores` as `ens/<set>`)
+**Outcome (2026-11-01):** `train.py ens` writes `ens/ABC`: equal-weight average of each model's percentile among its own train scores (`lgbm/ABC` and the MLP mean over seeds 0–2; no weight tuned on val). Val (`logs/phase4_val_ens.log`): PR-AUC **0.483** vs `lgbm/ABC` 0.444 and MLP seeds 0.477 / 0.472 / 0.464; P/R@500/day **0.476 / 0.460** (best of all; `lgbm/ABC` 0.456 / 0.440, `mlp_s0` 0.474 / 0.458). Paired: vs `lgbm/ABC` **+0.039** [0.028, 0.050], cluster [0.028, 0.052], significant; vs the MLP seeds +0.007 / +0.011 / +0.019, **no CI excludes 0 under both**. **Fails the keep rule** (must beat the best single model): it is the MLP plus a little LightGBM. Shared weak spots unchanged at 500/day (STACK 0.51 vs 0.53, BIPARTITE 0.45 vs 0.49); gains where the models already differed (FAN-IN 0.93, CYCLE 0.53, GATHER-SCATTER 0.92). Held as a possible second test finalist at Checkpoint B (triet's call).
+
+**Cycle-window check (throwaway, 2026-11-01):** val CYCLE rows closing a time-ordered cycle (≤ 10): 8 of 66 at 3d, **11 of 66 at 5d, 7d and unlimited** (licit 0.07% → 0.17%). Of the 24 CYCLE attempts touching val, **13 finish after val** (closing payment in test/tail), so val holds only their opening payments; of the 11 that close inside val, the features already catch 10. Train cycles are time-ordered (19/21) and the last payment closes the loop (20/21). **Per-pattern recall on val and test is structurally capped for slow patterns:** attempts take ~3 days, val and test are 2 days each, and a past-only feature can only fire on the completing payment. Not fixable without changing the locked split; goes in the write-up.
 
 ### Task 9: Account-level alerts (S)
 **Description:** roll transaction scores up to one alert per account per day (max score). Account label as in `decisions.md` (≥ 1 laundering transaction that day). Precision and recall at K accounts per day.

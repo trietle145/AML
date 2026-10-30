@@ -101,6 +101,22 @@ def lgbm(con, feature_set, tuning_log):
     save_scores(con, "lgbm", feature_set, out, out.score)
 
 
+# equal-weight rank average of lgbm/ABC and the MLP (mean over its 3 seeds, so no seed is picked on val);
+# each score becomes its percentile among that model's train scores, a fixed mapping val and test can't move
+def ens(con):
+    s = con.sql("""
+        SELECT tx_id, split, AVG(score) FILTER (WHERE model = 'lgbm') lgbm, AVG(score) FILTER (WHERE model LIKE 'mlp_s%') mlp,
+               COUNT(*) FILTER (WHERE model LIKE 'mlp_s%') n_mlp
+        FROM scores WHERE feature_set = 'ABC' AND (model = 'lgbm' OR model IN ('mlp_s0', 'mlp_s1', 'mlp_s2'))
+        GROUP BY 1, 2 ORDER BY tx_id
+    """).df()
+    assert len(s) == 5_078_345 and (s.n_mlp == 3).all() and s.lgbm.notna().all()
+    pct = lambda c: np.searchsorted(np.sort(s.loc[s.split == "train", c].to_numpy()), s[c].to_numpy(), side="right") / (s.split == "train").sum()
+    score = (pct("lgbm") + pct("mlp")) / 2
+    assert ((score >= 0) & (score <= 1)).all()
+    save_scores(con, "ens", "ABC", s, score)
+
+
 def main():
     # Windows commit limit (RAM + 4 GB page file) leaves ~2.9 GB for this process: DuckDB gets 700MB and spills its sorts,
     # pandas needs the rest (one 62-column split is 0.8 GB and is copied once while being assembled)
@@ -121,12 +137,14 @@ def main():
             lgbm(con, fs, tuning_log)
     elif what == ["is_ach"]:
         is_ach(con)
+    elif what == ["ens"]:
+        ens(con)
     elif len(what) == 2 and what[0] == "lr" and what[1] in FEATURE_SETS:
         lr(con, what[1])
     elif len(what) == 2 and what[0] == "lgbm" and what[1] in FEATURE_SETS:
         lgbm(con, what[1], tuning_log)
     else:
-        sys.exit("usage: train.py [--phase N] all | is_ach | lr <set> | lgbm <set>   (sets: " + ", ".join(FEATURE_SETS) + ")")
+        sys.exit("usage: train.py [--phase N] all | is_ach | ens | lr <set> | lgbm <set>   (sets: " + ", ".join(FEATURE_SETS) + ")")
 
 
 if __name__ == "__main__":
