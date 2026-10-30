@@ -103,6 +103,106 @@ def analyze(con, fs="AB", prefix=""):
     print(f"\nUNLISTED recall at the val threshold, by ACH:\n{unl.round(3).to_string()}")
 
 
+# per val row: does its sender or receiver have an earlier (<= 3d) transaction this model scored >= thr?
+# hit_val counts only val-period history; train-period scores are in-sample, so they flatter train laundering
+PAST_SCORE_SQL = """
+WITH hi AS (SELECT UNNEST([t.from_acct, t.to_acct]) a, t.ts, t.split = 'val' in_val
+            FROM scores s JOIN transactions t USING (tx_id)
+            WHERE s.model = ? AND s.feature_set = ? AND s.split IN ('train', 'val') AND s.score >= ?),
+     va AS (SELECT tx_id, ts, UNNEST([from_acct, to_acct]) a FROM transactions WHERE split = 'val'),
+     hit AS (SELECT va.tx_id, BOOL_OR(hi.in_val) hit_val FROM va JOIN hi
+             ON hi.a = va.a AND hi.ts < va.ts AND hi.ts >= va.ts - INTERVAL 3 DAY GROUP BY 1)
+SELECT CASE WHEN t.is_laundering = 0 THEN 'licit' WHEN p.tx_id IS NOT NULL THEN 'listed'
+            WHEN t.payment_format = 'ACH' THEN 'UNLISTED ACH' ELSE 'UNLISTED non-ACH' END grp,
+       COUNT(*) n, SUM((s.score >= ?)::INT) flagged,
+       SUM((h.tx_id IS NOT NULL)::INT) hit_any, SUM(COALESCE(h.hit_val, FALSE)::INT) hit_val,
+       SUM((h.tx_id IS NOT NULL AND s.score < ?)::INT) hit_any_nf, SUM(COALESCE(h.hit_val AND s.score < ?, FALSE)::INT) hit_val_nf
+FROM transactions t JOIN scores s USING (tx_id) LEFT JOIN tx_pattern p USING (tx_id) LEFT JOIN hit h USING (tx_id)
+WHERE t.split = 'val' AND s.model = ? AND s.feature_set = ? GROUP BY 1"""
+
+
+# train + val only: who the UNLISTED launderers are, whether they touch listed schemes or repeat accounts,
+# whether past model scores already flag their accounts, and how far a model trained on UNLISTED alone gets
+def analyze_unlisted(con, models=("lgbm/ABC", "gnn/ABC")):
+    def report(df, name):
+        df.to_csv(REPORTS / f"phase4-unlisted-{name}.csv", index=False)
+        print(f"\n== {name}\n{df.round(4).to_string(index=False)}")
+
+    grp = "CASE WHEN t.is_laundering = 0 THEN 'licit' WHEN p.tx_id IS NULL THEN 'UNLISTED' ELSE 'listed' END grp"
+    tv = "t.split IN ('train', 'val')"
+    prof = con.sql(f"""
+        SELECT {grp}, COUNT(*) n,
+               AVG((t.payment_format = 'ACH')::INT) ach, MEDIAN(10 ^ f.log_amount_usd) med_usd,
+               AVG((10 ^ f.log_amount_usd BETWEEN 10000 AND 20000)::INT) usd_10_20k,
+               AVG(f.is_cross_bank::INT) cross_bank, AVG(f.is_self_transfer::INT) self,
+               AVG((f.out_has_history = 0)::INT) sender_new, AVG((f.in_has_history = 0)::INT) receiver_new,
+               MEDIAN(f.out_cnt_24h) out_cnt_24h, MEDIAN(f.in_cnt_24h) in_cnt_24h, MEDIAN(f.in_cpty_3d) in_cpty_3d,
+               MEDIAN(f.out_recv_cnt_24h) sender_recv_24h, AVG((f.pair_cnt_3d > 0)::INT) seen_pair, AVG(f.hour) mean_hour
+        FROM transactions t JOIN features f USING (tx_id) LEFT JOIN tx_pattern p USING (tx_id)
+        WHERE {tv} GROUP BY 1 ORDER BY 1""").df()
+    assert prof.n.sum() == 3_248_921 + 965_524, "train + val rows only"
+    report(prof, "profile")
+    report(con.sql(f"""
+        SELECT t.payment_format, COUNT(*) n, 100 * COUNT(*) / SUM(COUNT(*)) OVER () pct
+        FROM transactions t LEFT JOIN tx_pattern p USING (tx_id)
+        WHERE {tv} AND t.is_laundering = 1 AND p.tx_id IS NULL GROUP BY 1 ORDER BY 2 DESC""").df(), "formats")
+
+    # first time each account appears in a listed scheme / in any laundering, within train + val
+    links = con.sql(f"""
+        WITH sch AS (SELECT a, MIN(ts) first_ts FROM (SELECT UNNEST([t.from_acct, t.to_acct]) a, t.ts
+                     FROM tx_pattern p JOIN transactions t USING (tx_id) WHERE {tv}) GROUP BY 1),
+             lab AS (SELECT a, MIN(ts) first_ts FROM (SELECT UNNEST([t.from_acct, t.to_acct]) a, t.ts
+                     FROM transactions t WHERE {tv} AND t.is_laundering = 1) GROUP BY 1)
+        SELECT {grp}, COUNT(*) n,
+               AVG((ss.a IS NOT NULL OR sr.a IS NOT NULL)::INT) shares_acct_with_scheme,
+               AVG(COALESCE(ss.first_ts < t.ts OR sr.first_ts < t.ts, FALSE)::INT) scheme_acct_earlier,
+               AVG(COALESCE(ls.first_ts < t.ts OR lr.first_ts < t.ts, FALSE)::INT) acct_had_earlier_laundering
+        FROM transactions t LEFT JOIN tx_pattern p USING (tx_id)
+             LEFT JOIN sch ss ON ss.a = t.from_acct LEFT JOIN sch sr ON sr.a = t.to_acct
+             LEFT JOIN lab ls ON ls.a = t.from_acct LEFT JOIN lab lr ON lr.a = t.to_acct
+        WHERE {tv} GROUP BY 1 ORDER BY 1""").df()
+    report(links, "links")
+
+    rows = []
+    for m in models:
+        model, fs = m.split("/")
+        v = con.sql("""SELECT s.score, t.is_laundering y FROM scores s JOIN transactions t USING (tx_id)
+                       WHERE s.split = 'val' AND s.model = ? AND s.feature_set = ?""", params=[model, fs]).df()
+        # "high" = at the alert threshold (val best F1), or the looser top 1% of val scores; flagged is always the alert
+        thr = float(best_f1_threshold(v.y, v.score)[0])
+        for cut_name, cut in (("best_f1", thr), ("top1pct", float(v.score.quantile(0.99)))):
+            d = con.sql(PAST_SCORE_SQL, params=[model, fs, cut, thr, thr, thr, model, fs]).df().set_index("grp")
+            d.loc["UNLISTED"] = d.loc[["UNLISTED ACH", "UNLISTED non-ACH"]].sum()
+            for hist in ("any", "val"):
+                rate = d[f"hit_{hist}"] / d.n
+                rows.append(pd.DataFrame({"model": m, "high": cut_name, "cut": cut, "history": hist, "n": d.n,
+                                          "flagged": d.flagged, "hit": d[f"hit_{hist}"], "hit_rate": rate,
+                                          "lift_vs_licit": rate / rate["licit"],
+                                          "hit_not_flagged": d[f"hit_{hist}_nf"]}).reset_index())
+    past = pd.concat(rows)
+    assert (past[past.grp == "UNLISTED"].n == 379).all() and (past.hit_not_flagged <= past.hit).all()
+    report(past, "past-scores")
+
+    # upper bound: LightGBM on UNLISTED vs licit only (listed positives dropped), same settings as the exploration
+    cols = FEATURE_SETS["ABC"]
+    pat = con.sql("SELECT tx_id FROM tx_pattern").df().tx_id
+    tr, va = load(con, cols, "train"), load(con, cols, "val")
+    tr, va = tr[~tr.tx_id.isin(pat)], va[~va.tx_id.isin(pat)]
+    m = lgb.LGBMClassifier(n_estimators=2000, num_leaves=15, learning_rate=0.05, min_child_samples=500, random_state=0, verbose=-1)
+    m.fit(tr[cols], tr.y, eval_X=va[cols], eval_y=va.y, eval_metric="average_precision",
+          callbacks=[lgb.early_stopping(100, verbose=False)])
+    del tr
+    s = m.predict_proba(va[cols])[:, 1]
+    na = (va.payment_format != "ACH").to_numpy()
+    ub = pd.DataFrame([{"rows": k, "pos": int(va.y[mask].sum()), "pr_auc": pr_auc(va.y[mask], s[mask]),
+                        "base_rate": va.y[mask].mean(), "best_iteration": m.best_iteration_}
+                       for k, mask in (("all", np.ones(len(va), bool)), ("non-ACH", na))])
+    assert ub.pos[0] == 379 and (ub.pr_auc > ub.base_rate).all()
+    report(ub, "upper-bound")
+    imp = pd.Series(m.booster_.feature_importance("gain"), index=cols).sort_values(ascending=False)
+    print("top features:", ", ".join(f"{k} {v / imp.sum():.0%}" for k, v in imp.head(6).items()))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--split", default="val", choices=["val", "test", "tail"])
@@ -112,7 +212,11 @@ def main():
     ap.add_argument("--phase", type=int, default=2, choices=[2, 3], help="3 writes reports/phase3-* and never touches Phase 2 files")
     ap.add_argument("--models", help="comma-separated models to evaluate (default: all in scores); required for a phase 3 --final run")
     ap.add_argument("--pairs", help="comma-separated a:b pairs for paired differences, instead of PAIRS[phase]; b may be outside --models")
+    ap.add_argument("--analyze-unlisted", action="store_true", help="train + val diagnosis of UNLISTED laundering (--models: past-score models, default lgbm/ABC,gnn/ABC); writes reports/phase4-unlisted-*")
     args = ap.parse_args()
+    if args.analyze_unlisted:
+        con = duckdb.connect(str(DB), read_only=True, config={"memory_limit": "700MB", "threads": 2})
+        return analyze_unlisted(con, args.models.split(",") if args.models else ("lgbm/ABC", "gnn/ABC"))
     if args.analyze:
         fs = (args.models or "lgbm/AB").split("/")[1]
         con = duckdb.connect(str(DB), read_only=True, config={"memory_limit": "700MB", "threads": 2})
