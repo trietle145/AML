@@ -32,10 +32,9 @@ Lift recall at 500 alerts/day on the listed patterns the models nearly catch (ST
 
 ```
 T1 UNLISTED diagnosis (done)
-T2 pattern anatomy (train) ─┬─ T3 cycle timing slice ─ T4 set D: cycles
-                            └─ T5 set D: scatter-gather + bicliques
+T2 pattern anatomy (train) ─ T3 cycle timing slice (done; T4 cycles, T5 scatter-gather/bicliques dropped)
 T6 set D: account amount/time statistics (independent)
-        T4 + T5 + T6 ─ T7 lgbm/ABCD on val ─ Checkpoint A
+        T6 ─ T7 lgbm/ABCD on val ─ Checkpoint A
 Checkpoint A ─ T8 ensemble ─┐
               T9 account alerts ─┼─ T10 explanations ─ Checkpoint B ─ T11 test once ─ T12 IBM reference
 ```
@@ -67,38 +66,22 @@ Checkpoint A ─ T8 ensemble ─┐
 - **Caveat for Tasks 4–5:** a past-only structural feature can only fire on the edge that **completes** a structure (the closing edge of a cycle, the gather edges after a scatter, the last edge of a biclique). The first edges of an attempt look like nothing yet. That caps how much per-pattern recall set D can add.
 **Files:** `src/evaluate.py` (`--analyze-patterns`), `reports/phase4-pattern-anatomy.csv`
 
-### Task 3: Cycle-search timing slice (S, highest risk)
-**Description:** per-transaction counts of time-ordered cycles closing on edge u→v (paths v → … → u over strictly earlier edges in the window), by length 4..10 (Task 2; 2 and 3 are already in set C), 3d window. Time a bounded DFS over one val day in plain numpy/Python and extrapolate to 5M rows. If too slow (> ~1 h for the full table), use numba (approved by triet if needed), a Colab run, or a smaller L, and write the choice down. Includes a brute-force check on a sample against a naive implementation.
-**Acceptance:**
-- [ ] Measured time per 100k rows and the extrapolation to the full table
-- [ ] Naive vs fast counts match on ≥ 1,000 sampled rows (assert)
-- [ ] Decision on implementation path recorded here
-**Verification:** the slice script runs end to end with its asserts.
-**Dependencies:** Task 2
-**Files:** `src/features.py` (or `src/graphfeat.py` if it doesn't fit), log in `logs/`
+### Task 3: Cycle-search timing slice (S, highest risk) — DONE 2026-10-31, long cycles dropped
+**Description:** time a search for time-ordered cycles closing on each edge u→v (simple paths v → … → u over strictly earlier edges in the 3d window, lengths up to 10), check it, and decide the implementation path. Throwaway measurement, not in the repo.
+**Outcome:** pure Python with a backward-reachability prune runs at **0.1 ms/edge** (p99 0.5 ms, max 0.01 s) on 20,344 val edges: **~9 min for the full table, no numba needed**. Checks: length-3 counts equal set C's `cyc3_cnt_3d` and 2-cycles equal `pair_rev_cnt_3d > 0` on every sampled edge; a naive unpruned search agrees on all of them. **But the signal is tiny:** of the 66 val CYCLE-pattern rows, 8 close a 2- or 3-cycle (already in set C) and only **2** close a cycle of length 4–10. A past-only feature fires only on the closing edge, and many cycles take longer than 3d (Task 2). **Decision: drop long cycles** (old Task 4); the ceiling is ~2 of 1,036 val laundering rows.
 
-### Task 4: Set D, cycles (M, leakage risk)
-**Description:** full-table temporal cycle counts closing on each edge, by length 4..10 (binned, e.g. 4, 5–6, 7–10), strictly earlier edges, 3d window (Task 2). 2- and 3-cycles stay as they are in set C. Into the `features` table as new D columns.
-**Acceptance:**
-- [ ] `features.py --check` extended: brute-force recompute on a sample matches (0 mismatches), and a leaky variant (including same-minute or later edges) fails
-- [ ] Drift: no D column grows with absolute time (distribution on test within 1% of val on accounts seen in both)
-**Verification:** `features.py --check` passes; row count unchanged (5,078,345).
-**Dependencies:** Task 3
-**Files:** `src/features.py`
+### Task 4: dropped (long cycles, see Task 3)
 
-### Task 5: Set D, scatter-gather and bicliques (M, leakage risk)
-**Description:** for edge u→v, (a) scatter-gather counts binned by number of intermediates (GFP Algorithm 1 on past edges only: intersections of u's past receivers with the past senders of v's targets, and the mirror case); (b) K2,2 biclique count containing u→v (pairs u′, w with u′→v, u→w, u′→w in the window), aimed at BIPARTITE and STACK. Both are set intersections; no published evidence for (b), so it's an experiment.
-**Acceptance:**
-- [ ] Brute-force check on a sample, 0 mismatches; leaky variant fails
-- [ ] Single-feature val PR-AUC printed for each new column (smell test: none > 0.5)
-**Verification:** `features.py --check` passes.
-**Dependencies:** Task 2 (window); independent of Tasks 3–4
-**Files:** `src/features.py`
+### Task 5: Scatter-gather and bicliques — DROPPED 2026-10-31 after a ceiling check
+**Outcome:** throwaway check on all val laundering rows and 20k licit rows (0.33 ms/edge, ~30 min for the full table). Over strictly earlier edges in 3d, the edge completes a **K2,2 biclique** or a **two-hop scatter-gather** for: BIPARTITE 0 of 49, STACK 4 / 3 of 150, CYCLE 0 of 66, RANDOM 1 of 38. Only SCATTER-GATHER fires (50 of 134, 37%), and `lgbm/ABC` already catches it at ~89% at 500/day. UNLISTED 6.6% / 0.3% vs licit 1.6% / 0.3%. **The near-miss patterns don't complete these structures within a past-only 3d view, so the features can't lift them.**
+
+### Near-miss contributions (throwaway check, 2026-10-31)
+Per-row TreeSHAP contributions of `lgbm/ABC` (`pred_contrib`) on val laundering rows + 20k licit, caught = inside the day's top 500. Missed STACK / BIPARTITE / CYCLE / RANDOM rows sit a median **1.1–1.9 log-odds below the cut** (UNLISTED 2.9). Within each pattern, caught rows have **larger amounts, and amounts far above the receiver's usual** (`in_amt_vs_mean_24h` median 9.5× caught vs 3.6× missed for STACK + BIPARTITE); fan-in/out push 45–60% of missed rows down, because each transfer in these schemes looks one-to-one. UNLISTED: nothing separates caught from missed. **Caveat:** correlated features split credit into large opposite values (e.g. `pair_min_since_last` −2 to −16 vs `pair_cnt_3d` +1 to +2, both "first payment on this pair"; max |contribution| 139), so contributions must be summed per feature group before use (Task 10). **Steers Task 6 towards amount-vs-own-usual features.**
 
 ### Task 6: Set D, account amount and timing statistics (S, leakage risk)
-**Description:** GFP's "vertex statistics" group (+8.2 F1 in their ablation), restricted to what set B lacks: for sender and receiver, in and out, over 24h: variance, skew and kurtosis of amounts, and of **gaps between** incident transactions (never raw timestamps, which grow with absolute time). Plus the old draft's forwarding speed (minutes from an account's last receipt to this send) and structuring (sends just under $10k / $20k in 3d). Check overlap with set B first and drop duplicates.
+**Description:** priority from the near-miss check above: **how unusual this amount is for this sender and for this receiver** (amount vs the account's own median and spread over 24h / 3d, per direction; z-score or ratio), extending the existing `*_amt_vs_mean_24h`. Then GFP's "vertex statistics" group (+8.2 F1 in their ablation), restricted to what set B lacks: for sender and receiver, in and out, over 24h: variance, skew and kurtosis of amounts, and of **gaps between** incident transactions (never raw timestamps, which grow with absolute time). Plus the old draft's forwarding speed (minutes from an account's last receipt to this send) and structuring (sends just under $10k / $20k in 3d). Check overlap with set B first and drop duplicates.
 **Acceptance:**
-- [ ] Brute-force check 0 mismatches; leaky variant fails; drift check as Task 4
+- [ ] Brute-force check 0 mismatches; leaky variant fails; drift: distribution on test within 1% of val on accounts seen in both
 - [ ] List of B columns each new one overlaps with (correlation > 0.95 → dropped)
 **Verification:** `features.py --check` passes.
 **Dependencies:** none
@@ -111,7 +94,7 @@ Checkpoint A ─ T8 ensemble ─┐
 - [ ] Recall by pattern **at 500/day** and at the val threshold, with CIs, for STACK, BIPARTITE, CYCLE, RANDOM, UNLISTED
 - [ ] `lgbm/AB` and `lgbm/ABC` rows in `scores` unchanged (max diff 0)
 **Verification:** `train.py --phase 4 lgbm ABCD` then `evaluate.py --split val --phase 4 --models lgbm/ABC,lgbm/ABCD --pairs lgbm/ABCD:lgbm/ABC`.
-**Dependencies:** Tasks 4, 5, 6
+**Dependencies:** Task 6
 **Files:** `src/train.py`, `src/evaluate.py` (`--phase 4`), `reports/phase4-val-*.csv`
 
 ### Checkpoint A (review with triet)
@@ -132,7 +115,7 @@ Checkpoint A ─ T8 ensemble ─┐
 
 ### Task 10: Explanations (M)
 **Description:** per-alert feature contributions from LightGBM's `pred_contrib=True` (exact TreeSHAP, no new package); plain-English reasons from each alert's top 3 contributions (e.g. "received from 14 accounts in 3 days; forwarded 95% within 1 h; first payment to this receiver"); 10 val alerts checked by hand against the raw transactions.
-**Acceptance:** reasons for every val alert at 500/day; contributions sum to the raw score (assert); the 10 hand-checked examples read correctly.
+**Acceptance:** reasons for every val alert at 500/day, built from contributions **summed per feature group** (correlated features such as `pair_min_since_last` and `pair_cnt_3d` split credit into large opposite values); contributions sum to the raw score (assert); the 10 hand-checked examples read correctly.
 **Dependencies:** Checkpoint A
 **Files:** `src/explain.py`, `reports/phase4-alert-examples.md`
 
@@ -169,7 +152,7 @@ Checkpoint A ─ T8 ensemble ─┐
 
 | Risk | Impact | Mitigation |
 |---|---|---|
-| Cycle search too slow on the laptop | High | Task 3 timing slice first; numba, Colab or smaller L |
+| A structure feature can only fire on the completing edge | High | throwaway ceiling check before building each one (Task 3 found ~2 val rows for long cycles, so they were dropped) |
 | Set D leaks (same-minute edges, later edges) | High | brute-force `--check` with a leaky variant that must fail, as for B and C |
 | Multi-hop gains in the papers don't transfer (their windows, batch visibility, tail in test) | Med | Checkpoint A states it either way; per-pattern recall at 500/day is the target, not overall F1 |
 | Memory (bicliques and scatter-gather intersections) | Med | DuckDB caps as in Phase 3; one temp table per step; Colab fallback |
