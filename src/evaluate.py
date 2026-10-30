@@ -9,14 +9,15 @@ import pandas as pd
 
 from load import DB, ROOT
 from metrics import (ALERTS_PER_DAY, best_f1_threshold, bootstrap_ci, f1_at, paired_bootstrap_ci, pr_auc,
-                     precision_recall_at_k_per_day, recall_by_pattern)
+                     precision_recall_at_k_per_day, recall_by_pattern, top_k_per_day)
 from train import CATEGORICAL, FEATURE_SETS, load
 
 REPORTS = ROOT / "reports"
 # phase -> (new model, partner) pairs; a pair is used when both have scores
 PAIRS = {2: [("lgbm/AB", "lr/AB"), ("lgbm/AB", "lgbm/A")],
          3: [("lgbm/ABC", "lgbm/AB"), ("gnn/ABC", "lgbm/ABC"), ("gnn/ABC", "lgbm/AB"), ("gnn/ABC", "mlp/ABC"),
-             ("gnn/AB", "lgbm/AB"), ("gnn/AB", "mlp/AB"), ("lgbm/ABG", "lgbm/ABC")]}
+             ("gnn/AB", "lgbm/AB"), ("gnn/AB", "mlp/AB"), ("lgbm/ABG", "lgbm/ABC")],
+         4: [("lgbm/ABCD", "lgbm/ABC")]}
 
 
 # cluster = laundering attempt for listed-pattern rows, the row itself otherwise
@@ -243,7 +244,7 @@ def main():
     ap.add_argument("--final", action="store_true", help="required to score test or tail (done once)")
     ap.add_argument("--boot", type=int, default=1000, help="bootstrap resamples")
     ap.add_argument("--analyze", action="store_true", help="val-only analysis of one lgbm model (--models, default lgbm/AB) instead of metrics")
-    ap.add_argument("--phase", type=int, default=2, choices=[2, 3], help="3 writes reports/phase3-* and never touches Phase 2 files")
+    ap.add_argument("--phase", type=int, default=2, choices=[2, 3, 4], help="3 or 4 writes reports/phaseN-* and never touches earlier phases' files")
     ap.add_argument("--models", help="comma-separated models to evaluate (default: all in scores); required for a phase 3 --final run")
     ap.add_argument("--pairs", help="comma-separated a:b pairs for paired differences, instead of PAIRS[phase]; b may be outside --models")
     ap.add_argument("--analyze-unlisted", action="store_true", help="train + val diagnosis of UNLISTED laundering (--models: past-score models, default lgbm/ABC,gnn/ABC); writes reports/phase4-unlisted-*")
@@ -267,11 +268,12 @@ def main():
         ap.error(f"{args.split} was already scored (reports/{prefix}{args.split}-metrics.csv exists); it is scored once")
     if final and args.phase > 2:
         if not models:
-            ap.error("a phase 3 --final run needs --models (the new models only)")
-        earlier = REPORTS / f"{args.split}-metrics.csv"
-        done = set(pd.read_csv(earlier).model) & set(models) if earlier.exists() else set()
+            ap.error(f"a phase {args.phase} --final run needs --models (the new models only)")
+        # every earlier phase's file for this split, e.g. Phase 2's and Phase 3's for a Phase 4 run
+        earlier = [REPORTS / f"{'' if p == 2 else f'phase{p}-'}{args.split}-metrics.csv" for p in range(2, args.phase)]
+        done = set().union(*(set(pd.read_csv(e).model) for e in earlier if e.exists())) & set(models)
         if done:
-            ap.error(f"{sorted(done)} already scored on {args.split} in Phase 2; they are pairing partners, not new models")
+            ap.error(f"{sorted(done)} already scored on {args.split} in an earlier phase; they are pairing partners, not new models")
 
     con = duckdb.connect(str(DB), read_only=True)
     pairs = [tuple(p.split(":")) for p in args.pairs.split(",")] if args.pairs else PAIRS[args.phase]
@@ -286,7 +288,7 @@ def main():
         ap.error(f"no scores for {sorted(missing)}")
     # phase 3 always adds cluster CIs, pairs and recall CIs; phase 2 only on its final run
     extras = final or args.phase > 2
-    rows, recalls, thresholds = [], {}, {}
+    rows, recalls, recalls_k, thresholds = [], {}, {}, {}
     for name, d in data[data.name.isin(names)].groupby("name"):
         v = val[val.name == name]
         thr, _ = best_f1_threshold(v.y, v.score)
@@ -302,6 +304,7 @@ def main():
         print(f"{datetime.datetime.now():%H:%M} model {len(rows)}/{len(names)} {name}: PR-AUC {auc:.4f}")
         by_pattern = recall_by_pattern(d.y, d.score >= thr, d.pattern)
         recalls[name] = by_pattern.recall
+        recalls_k[name] = recall_by_pattern(d.y, top_k_per_day(d.score, d.day), d.pattern).recall
     if extras:
         if not args.pairs:
             pairs = [(a, b) for a, b in pairs if a in names and b in set(data.name)]
@@ -309,10 +312,14 @@ def main():
     metrics, patterns = pd.DataFrame(rows), pd.DataFrame(recalls).assign(n=by_pattern.n)
     metrics.to_csv(REPORTS / f"{prefix}{args.split}-metrics.csv", index=False)
     patterns.to_csv(REPORTS / f"{prefix}{args.split}-recall-by-pattern.csv", index_label="pattern")
+    patterns_k = pd.DataFrame(recalls_k).assign(n=by_pattern.n)
+    patterns_k.to_csv(REPORTS / f"{prefix}{args.split}-recall-by-pattern-at-k.csv", index_label="pattern")
     print(f"split={args.split}  rows={len(d):,}  positives={int(d.y.sum()):,}  boot={args.boot}")
     print(metrics.round(4).to_string(index=False))
     print("\nrecall by pattern at the val threshold")
     print(patterns.round(3).to_string())
+    print(f"\nrecall by pattern at {ALERTS_PER_DAY} alerts/day")
+    print(patterns_k.round(3).to_string())
 
 
 if __name__ == "__main__":
