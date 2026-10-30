@@ -19,13 +19,15 @@ PAIRS = {2: [("lgbm/AB", "lr/AB"), ("lgbm/AB", "lgbm/A")],
 
 
 # cluster = laundering attempt for listed-pattern rows, the row itself otherwise
-def load_split(con, split):
+def load_split(con, split, models=None):
+    # only the requested models: with ~15 models in `scores`, loading them all would mean ~15M rows in pandas
+    only = f"AND s.model || '/' || s.feature_set IN ({', '.join(repr(m) for m in models)})" if models else ""
     return con.sql(f"""
         SELECT s.model || '/' || s.feature_set name, s.tx_id, s.score, t.is_laundering y, t.day,
                CASE WHEN t.is_laundering = 1 THEN COALESCE(p.pattern_type, 'UNLISTED') END pattern,
                COALESCE('a' || p.attempt_id, 't' || s.tx_id) cluster
         FROM scores s JOIN transactions t USING (tx_id) LEFT JOIN tx_pattern p USING (tx_id)
-        WHERE s.split = '{split}' ORDER BY name, s.tx_id
+        WHERE s.split = '{split}' {only} ORDER BY name, s.tx_id
     """).df()
 
 
@@ -108,6 +110,7 @@ def main():
     ap.add_argument("--analyze", action="store_true", help="val-only analysis of one lgbm model (--models, default lgbm/AB) instead of metrics")
     ap.add_argument("--phase", type=int, default=2, choices=[2, 3], help="3 writes reports/phase3-* and never touches Phase 2 files")
     ap.add_argument("--models", help="comma-separated models to evaluate (default: all in scores); required for a phase 3 --final run")
+    ap.add_argument("--pairs", help="comma-separated a:b pairs for paired differences, instead of PAIRS[phase]; b may be outside --models")
     args = ap.parse_args()
     if args.analyze:
         fs = (args.models or "lgbm/AB").split("/")[1]
@@ -129,9 +132,12 @@ def main():
             ap.error(f"{sorted(done)} already scored on {args.split} in Phase 2; they are pairing partners, not new models")
 
     con = duckdb.connect(str(DB), read_only=True)
+    pairs = [tuple(p.split(":")) for p in args.pairs.split(",")] if args.pairs else PAIRS[args.phase]
+    # pair partners (e.g. the frozen lgbm/AB on test) are loaded too, though not re-scored
+    need = sorted(set(models) | {m for p in pairs for m in p}) if models else None
     # thresholds always come from val, then get applied unchanged to the evaluated split
-    val = load_split(con, "val")
-    data = val if not final else load_split(con, args.split)
+    val = load_split(con, "val", need)
+    data = val if not final else load_split(con, args.split, need)
     names = models or sorted(data.name.unique())
     missing = set(names) - set(data.name)
     if missing:
@@ -154,7 +160,8 @@ def main():
         by_pattern = recall_by_pattern(d.y, d.score >= thr, d.pattern)
         recalls[name] = by_pattern.recall
     if extras:
-        pairs = [(a, b) for a, b in PAIRS[args.phase] if a in names and b in set(data.name)]
+        if not args.pairs:
+            pairs = [(a, b) for a, b in pairs if a in names and b in set(data.name)]
         final_extras(data, thresholds, args.split, args.boot, pairs, prefix, names)
     metrics, patterns = pd.DataFrame(rows), pd.DataFrame(recalls).assign(n=by_pattern.n)
     metrics.to_csv(REPORTS / f"{prefix}{args.split}-metrics.csv", index=False)
