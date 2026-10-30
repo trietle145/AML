@@ -3,6 +3,7 @@ import datetime
 
 import duckdb
 import lightgbm as lgb
+import networkx as nx
 import numpy as np
 import pandas as pd
 
@@ -120,6 +121,39 @@ WHERE t.split = 'val' AND s.model = ? AND s.feature_set = ? GROUP BY 1"""
 
 # train + val only: who the UNLISTED launderers are, whether they touch listed schemes or repeat accounts,
 # whether past model scores already flag their accounts, and how far a model trained on UNLISTED alone gets
+# design analysis only (sets set D's windows and caps, never a feature): what each listed pattern looks like,
+# on attempts that lie entirely in train
+def analyze_patterns(con):
+    tx = con.sql("""
+        SELECT p.attempt_id, p.pattern_type, t.ts, t.from_acct, t.to_acct
+        FROM tx_pattern p JOIN transactions t USING (tx_id)
+        WHERE p.attempt_id NOT IN (SELECT attempt_id FROM tx_pattern JOIN transactions USING (tx_id) WHERE split <> 'train')
+    """).df()
+    rows = []
+    for (attempt, ptype), g in tx.groupby(["attempt_id", "pattern_type"]):
+        G = nx.DiGraph(zip(g.from_acct, g.to_acct))
+        rows.append({"pattern": ptype, "tx": len(g), "accounts": G.number_of_nodes(), "minutes": g.ts.nunique(),
+                     "span_h": (g.ts.max() - g.ts.min()).total_seconds() / 3600,
+                     "hops": nx.dag_longest_path_length(G) if nx.is_directed_acyclic_graph(G) else np.nan,
+                     "cycle_len": max(map(len, nx.simple_cycles(G)), default=0)})
+    a = pd.DataFrame(rows)
+    q = lambda p: (lambda s: s.quantile(p))
+    out = a.groupby("pattern").agg(attempts=("tx", "size"), tx_med=("tx", "median"), tx_p90=("tx", q(.9)),
+                                   accts_med=("accounts", "median"), accts_max=("accounts", "max"),
+                                   minutes_med=("minutes", "median"), span_h_med=("span_h", "median"),
+                                   span_h_p90=("span_h", q(.9)), span_h_max=("span_h", "max"),
+                                   within_24h=("span_h", lambda s: (s <= 24).mean()), within_72h=("span_h", lambda s: (s <= 72).mean()),
+                                   hops_med=("hops", "median"), hops_max=("hops", "max"),
+                                   cycle_len_med=("cycle_len", "median"), cycle_len_max=("cycle_len", "max")).reset_index()
+    out.to_csv(REPORTS / "phase4-pattern-anatomy.csv", index=False)
+    total = con.sql("SELECT COUNT(DISTINCT attempt_id) FROM tx_pattern").fetchall()[0][0]
+    print(f"{len(a)} of {total} attempts lie entirely in train (the rest touch val/test/tail and are skipped)")
+    print(out.round(2).to_string(index=False))
+    if (a.pattern == "CYCLE").any():
+        print("\nCYCLE lengths (train attempts):", a[a.pattern == "CYCLE"].cycle_len.value_counts().sort_index().to_dict())
+    assert out.attempts.sum() == tx.attempt_id.nunique() == len(a)
+
+
 def analyze_unlisted(con, models=("lgbm/ABC", "gnn/ABC")):
     def report(df, name):
         df.to_csv(REPORTS / f"phase4-unlisted-{name}.csv", index=False)
@@ -209,7 +243,10 @@ def main():
     ap.add_argument("--phase", type=int, default=2, choices=[2, 3], help="3 writes reports/phase3-* and never touches Phase 2 files")
     ap.add_argument("--models", help="comma-separated models to evaluate (default: all in scores); required for a phase 3 --final run")
     ap.add_argument("--analyze-unlisted", action="store_true", help="train + val diagnosis of UNLISTED laundering (--models: past-score models, default lgbm/ABC,gnn/ABC); writes reports/phase4-unlisted-*")
+    ap.add_argument("--analyze-patterns", action="store_true", help="train-only anatomy of the listed patterns (design input for set D); writes reports/phase4-pattern-anatomy.csv")
     args = ap.parse_args()
+    if args.analyze_patterns:
+        return analyze_patterns(duckdb.connect(str(DB), read_only=True, config={"memory_limit": "700MB", "threads": 2}))
     if args.analyze_unlisted:
         con = duckdb.connect(str(DB), read_only=True, config={"memory_limit": "700MB", "threads": 2})
         return analyze_unlisted(con, args.models.split(",") if args.models else ("lgbm/ABC", "gnn/ABC"))
