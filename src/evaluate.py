@@ -43,6 +43,7 @@ def final_extras(data, thresholds, split, boot, pairs, prefix, names):
             diff, lo, hi = paired_bootstrap_ci(da.y.to_numpy(), da.score.to_numpy(), db.score.to_numpy(), n=boot, clusters=cl)
             row.update({"diff": diff, f"lo_{kind}": lo, f"hi_{kind}": hi})
         paired.append(row)
+        print(f"{datetime.datetime.now():%H:%M} pair {len(paired)}/{len(pairs)} {a} - {b}: {diff:+.4f}")
     paired = pd.DataFrame(paired)
     paired.to_csv(REPORTS / f"{prefix}{split}-paired.csv", index=False)
     print("\npaired PR-AUC differences (a - b):")
@@ -157,6 +158,7 @@ def main():
             _, row["ci_lo_cluster"], row["ci_hi_cluster"] = bootstrap_ci(d.y, d.score, n=args.boot, clusters=d.cluster.to_numpy())
             row["scored_at"] = datetime.datetime.now().isoformat(timespec="minutes")
         rows.append(row)
+        print(f"{datetime.datetime.now():%H:%M} model {len(rows)}/{len(names)} {name}: PR-AUC {auc:.4f}")
         by_pattern = recall_by_pattern(d.y, d.score >= thr, d.pattern)
         recalls[name] = by_pattern.recall
     if extras:

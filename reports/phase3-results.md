@@ -1,6 +1,6 @@
 # Phase 3 results: graph features and a GNN against the frozen baseline
 
-*Rules: `docs/decisions.md`. Plan: `docs/phase3-plan.md`. Model walkthrough: `docs/model.md`. Val numbers regenerate with the `evaluate.py --split val --phase 3 --models … --pairs …` command recorded in the plan's T6 Outcome (CSVs: `reports/phase3-val-*.csv`). GNN run settings and histories: `reports/phase3-gnn-runs.csv`. Test is not scored yet (Checkpoint B first).*
+*Rules: `docs/decisions.md`. Plan: `docs/phase3-plan.md`. Model walkthrough: `docs/model.md`. Val numbers regenerate with the `evaluate.py --split val --phase 3 --models … --pairs …` command recorded in the plan's T6 Outcome (CSVs: `reports/phase3-val-*.csv`). GNN run settings and histories: `reports/phase3-gnn-runs.csv`. Test and tail were scored once on 2026-10-30 after Checkpoint B (logs `logs/t6_test.log`, `logs/t6_tail.log`).*
 
 ## Val (Sep 7–8; 965,524 rows, 1,036 laundering)
 
@@ -65,6 +65,66 @@ Val was used for early stopping, grid choice, best-epoch choice and thresholds, 
 
 T6's condition was "the best GNN beats `lgbm/ABC` on val". Taken alone it does (by +0.02 to +0.04), but the MLP does just as well without any graph embeddings, so the embeddings carry nothing the head's inputs don't already have. Stacking them into LightGBM would add the stacking-leak risk for no expected gain.
 
-## Test
+## Test (Sep 9–10; 862,792 rows, 956 laundering), scored once on 2026-10-30
 
-*Not scored yet. Checkpoint B (triet's review of the above) decides which models go to test, each scored once.*
+Same seven models, 10 comparisons, val thresholds, 1,000 resamples. Command: the val command in the plan's T6 Outcome with `--split test --final` and `lgbm/AB` left out of `--models` (it is only loaded as a pair partner; its Phase 2 test scores are reused).
+
+### Headline (`phase3-test-metrics.csv`)
+
+| Model | PR-AUC [iid 95% CI] | Cluster CI | F1 | P@500/day | R@500/day |
+|---|---|---|---|---|---|
+| `lgbm/AB` (frozen, Phase 2 test run) | 0.292 [0.261, 0.328] | [0.232, 0.351] | 0.351 | 0.337 | 0.353 |
+| `lgbm/ABC` | **0.345** [0.313, 0.381] | [0.286, 0.400] | **0.414** | **0.389** | **0.407** |
+| `mlp_s0` / `s1` / `s2` | 0.371 / 0.368 / 0.368 | | 0.359 / 0.357 / 0.388 | 0.377 / 0.382 / 0.369 | 0.394 / 0.400 / 0.386 |
+| `gnn_s0` / `s1` / `s2` | 0.372 / 0.375 / 0.379 | | 0.408 / 0.399 / 0.394 | 0.386 / 0.385 / 0.377 | 0.404 / 0.403 / 0.394 |
+| **MLP, 3 seeds** | **0.369 ± 0.002** | | 0.368 | 0.376 | 0.393 |
+| **GNN, 3 seeds** | **0.375 ± 0.003** | | 0.400 | 0.383 | 0.400 |
+
+### Paired differences (`phase3-test-paired.csv`)
+
+| Comparison | PR-AUC diff | iid 95% CI | Cluster 95% CI | Significant? |
+|---|---|---|---|---|
+| `lgbm/ABC` − `lgbm/AB` | **+0.053** | [0.024, 0.080] | [0.022, 0.084] | **yes, both** |
+| `gnn_s0` − `mlp_s0` | +0.002 | [−0.012, 0.016] | [−0.016, 0.018] | no |
+| `gnn_s1` − `mlp_s1` | +0.006 | [−0.007, 0.020] | [−0.009, 0.020] | no |
+| `gnn_s2` − `mlp_s2` | +0.011 | [0.001, 0.021] | [−0.001, 0.023] | iid only |
+| `gnn_s0` − `lgbm/ABC` | +0.027 | [−0.001, 0.055] | [−0.003, 0.058] | no |
+| `gnn_s1` − `lgbm/ABC` | +0.029 | [0.003, 0.055] | [0.001, 0.058] | yes, both |
+| `gnn_s2` − `lgbm/ABC` | +0.034 | [0.009, 0.058] | [0.004, 0.065] | yes, both |
+| `mlp_s0` − `lgbm/ABC` | +0.026 | [0.001, 0.051] | [−0.003, 0.054] | iid only |
+| `mlp_s1` − `lgbm/ABC` | +0.023 | [−0.003, 0.049] | [−0.007, 0.051] | no |
+| `mlp_s2` − `lgbm/ABC` | +0.023 | [−0.003, 0.049] | [−0.005, 0.053] | no |
+
+### What it shows
+
+1. **Headline: hand-made graph features beat the per-transaction + behavioural baseline.** `lgbm/ABC` − `lgbm/AB` is +0.053 PR-AUC on test (val +0.051), significant under iid and attempt-cluster resampling. At 500 alerts/day, precision goes 0.337 → 0.389 and recall 0.353 → 0.407.
+2. **Message passing still adds nothing that clears the bar.** GNN − MLP is +0.002 / +0.006 / +0.011 per seed, never significant under both CIs (val: +0.007 / −0.009 / −0.001). The GNN is ahead on all three test seeds, by +0.006 on average, which is too small to matter.
+3. **The neural nets rank better overall, but not at the operating point.** On PR-AUC they lead `lgbm/ABC` by +0.023 to +0.034, significant under both CIs for 2 of 6 seeds (both GNN). At 500 alerts/day, `lgbm/ABC` matches or beats every one of them (precision 0.389 vs 0.369–0.386, recall 0.407 vs 0.386–0.404), and has the best F1 at its val threshold. Their extra ranking quality sits away from the top 500 alerts a day.
+4. **Val → test drop of ~0.1 for every model** (`lgbm/ABC` 0.444 → 0.345, neural nets ~0.47 → ~0.37), the same as Phase 2's `lgbm/AB` (0.393 → 0.292). The ordering holds, so this is a harder period, not overfitting of one model.
+5. **UNLISTED stays near 0:** 0.8–3.2% recall (3–12 of 371). The GNN seeds catch slightly more (2.4–3.2%) than `lgbm/ABC` (1.3% [0.3%, 2.7%]), with overlapping CIs (`phase3-test-recall-by-pattern-ci.csv`).
+
+### Recall by pattern at the val threshold (`phase3-test-recall-by-pattern.csv`)
+
+| Pattern | n | `lgbm/ABC` | MLP seeds | GNN seeds |
+|---|---|---|---|---|
+| FAN-IN | 57 | **0.86** | 0.72–0.75 | 0.74–0.75 |
+| FAN-OUT | 65 | 0.79 | 0.83–0.86 | 0.77–0.85 |
+| GATHER-SCATTER | 127 | 0.74 | 0.78–0.84 | 0.73–0.82 |
+| SCATTER-GATHER | 110 | 0.73 | 0.80–0.86 | 0.78–0.81 |
+| CYCLE | 55 | 0.44 | 0.24–0.35 | 0.18–0.53 |
+| BIPARTITE | 44 | 0.39 | 0.30–0.48 | 0.30–0.32 |
+| STACK | 84 | **0.35** | 0.18–0.32 | 0.23–0.27 |
+| RANDOM | 43 | 0.44 | 0.33–0.54 | 0.28–0.51 |
+| UNLISTED | 371 | 0.013 | 0.008–0.019 | 0.024–0.032 |
+
+As on val, the neural nets do better on fan-out and the gather/scatter shapes, and `lgbm/ABC` on fan-in and stack. Seed spread on the small patterns (cycle, random) is wide: 0.18–0.53 for the GNN on cycles.
+
+## Tail (Sep 11–18; 1,108 rows, 59% laundering): not a headline
+
+Every model scores 0.95–0.97 PR-AUC, and every row is an alert at 500/day (`phase3-tail-*.csv`). `lgbm/ABC` − `lgbm/AB` is +0.007 [−0.002, 0.017], n.s. `gnn_s0` is significantly below `mlp_s0` (−0.019) and `lgbm/ABC` (−0.018) there, the other seeds aren't. As in Phase 2, the tail can't separate models and stays out of the conclusions.
+
+## Conclusion
+
+- **Do past-only graph features beat per-transaction + behavioural features? Yes.** +0.053 test PR-AUC from the hand-made set C, significant on val and test under both CIs, and better precision and recall at 500 alerts/day.
+- **Does a GNN add anything on top of hand-made graph features? No, nothing measurable.** The MLP with the same inputs matches it on val and test.
+- **Model choice:** the neural nets rank a bit better overall, but `lgbm/ABC` is as good at the operating point, explainable with SHAP, and stable (2 of 5 GNN runs diverged). Proposed Phase 4 base: `lgbm/ABC` (pending triet's OK for `decisions.md`).

@@ -312,27 +312,28 @@ If the best `gnn` beats `lgbm/ABC` on val, expand `lgbm/ABG` into its own tasks 
 - **Command:** `python -u src/evaluate.py --split val --phase 3 --models lgbm/AB,lgbm/ABC,gnn/ABC,mlp/ABC,gnn_s0/ABC,gnn_s1/ABC,gnn_s2/ABC,mlp_s0/ABC,mlp_s1/ABC,mlp_s2/ABC --pairs lgbm/ABC:lgbm/AB,gnn_s0/ABC:mlp_s0/ABC,gnn_s1/ABC:mlp_s1/ABC,gnn_s2/ABC:mlp_s2/ABC,gnn_s0/ABC:lgbm/ABC,gnn_s1/ABC:lgbm/ABC,gnn_s2/ABC:lgbm/ABC,mlp_s0/ABC:lgbm/ABC,mlp_s1/ABC:lgbm/ABC,mlp_s2/ABC:lgbm/ABC` (~45 min; it rewrites the `phase3-val-*.csv` files, which still include T3's `lgbm/ABC` − `lgbm/AB` pair).
 
 ## Checkpoint B: review val with triet (hard stop)
-- [ ] Val results for `lgbm/ABC`, `mlp/ABC`, `gnn/ABC` (and `lgbm/ABG` if built) reviewed **before** touching test
-- [ ] triet confirms which models go to test
+- [x] Val results for `lgbm/ABC`, `mlp/ABC`, `gnn/ABC` (and `lgbm/ABG` if built) reviewed **before** touching test
+- [x] triet confirms which models go to test
 
 ---
 
-## Task 7: Score test once and write results (S)
+## Task 7: Score test once and write results (S) — DONE 2026-10-31
 
 **Description:** `python src/evaluate.py --split test --final --phase 3 --models …`, then `--split tail`. Val thresholds, 1,000 resamples, iid and attempt-cluster, paired differences as listed, recall by pattern with CIs. Write the test, tail and conclusion sections of `reports/phase3-results.md`, and one line in `decisions.md` naming the model Phase 4 explains.
 
 **Acceptance criteria:**
-- [ ] Each new model scored on test once and logged with the date; Phase 2 files untouched
-- [ ] Headline answer stated plainly: is each new model significantly better than `lgbm/AB` (CI excludes 0) under iid **and** cluster CIs; UNLISTED recall with CIs
-- [ ] `decisions.md` names the Phase 4 model (if the GNN wins but `lgbm/ABC` or `lgbm/ABG` is close, prefer the explainable one and say why)
+- [x] Each new model scored on test once and logged with the date; Phase 2 files untouched
+- [x] Headline answer stated plainly: is each new model significantly better than `lgbm/AB` (CI excludes 0) under iid **and** cluster CIs; UNLISTED recall with CIs
+- [x] `decisions.md` names the Phase 4 model (if the GNN wins but `lgbm/ABC` or `lgbm/ABG` is close, prefer the explainable one and say why)
 
 **Verification:** numbers regenerate from `scores` with the logged commands.
 **Dependencies:** Checkpoint B
 **Files:** `src/evaluate.py` (if needed), `reports/phase3-results.md`, `docs/decisions.md`
+**Outcome (2026-10-30):** Checkpoint B: triet picked `lgbm/ABC` + all six seeds (`gnn_s0–s2`, `mlp_s0–s2`), so no seed is chosen on val. Test 22:46–22:57 (`logs/t6_test.log`; `evaluate.py` now prints a timestamped line per model and pair), tail right after (`logs/t6_tail.log`). Test PR-AUC: `lgbm/ABC` 0.345 vs `lgbm/AB` 0.292, paired +0.053 [0.024, 0.080], cluster [0.022, 0.084], **significant**. GNN 0.375 ± 0.003, MLP 0.369 ± 0.002; GNN − MLP +0.002 / +0.006 / +0.011, none significant under both CIs. Neural nets − `lgbm/ABC` +0.023 to +0.034 (significant under both for `gnn_s1`, `gnn_s2`), but at 500 alerts/day `lgbm/ABC` ties or wins (P 0.389, R 0.407). UNLISTED recall 0.8–3.2%. Tail 0.95–0.97 for all, not informative. Write-up: `reports/phase3-results.md`. Phase 2 report files untouched. **Phase 4 model:** `lgbm/ABC`, approved by triet 2026-10-31 (no more neural nets); written to `decisions.md` on branch `unlisted-diagnosis`. Next: Checkpoint C.
 
 ## Checkpoint C: Phase 3 complete
 - [ ] `features.py`, `train.py lgbm ABC --phase 3` and `gnn.py export train` rebuild everything; `lgbm/AB` still equals the frozen copy
-- [ ] Results reviewed by triet
+- [x] Results reviewed by triet (2026-10-31)
 
 ---
 
