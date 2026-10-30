@@ -238,23 +238,40 @@ Changes made on the way:
 **Dependencies:** T4
 **Files:** `src/gnn.py`
 
-## Task 6: Small GNN grid and val analysis (S)
+## Task 6: GNN grid on Colab and val analysis (M) — revised 2026-10-30
 
-**Description:** At most about 8 runs: W ∈ {24h, 3d if it fits}, layers ∈ {2, 3}, hidden ∈ {32, 64}, then 3 seeds of the best. Log to `reports/phase3-tuning.csv`. On val:
-- paired differences against `lgbm/AB`, `lgbm/ABC` and `mlp/ABC`;
+**Why revised:** the T5 baseline (lr 0.001, positive weight 100, one update per hour, hidden 32, 24h window) learns slowly: it is still improving after 15 epochs at ~4.4 min each on CPU. The IBM Multi-GNN code (`model_settings.json`, `util.py`, `train_util.py`) trains GIN with **lr ≈ 0.006, class weight ≈ 6, dropout 0.01 / 0.1, batches of 8,192 transactions, hidden 66, up to 100 epochs**. Those settings become `DEFAULTS` in `src/gnn.py`. IBM's *time handling* is **not** copied: its val/test graphs include later edges of the same period, which our past-only rule forbids.
+
+**Description:** run the grid unattended on a Colab T4 (16 GB VRAM) with `notebooks/colab_gnn.ipynb`.
+- **Inputs:** `edges.npz` + `head.npy` uploaded to `MyDrive/aml/`.
+- **Outputs:** written straight to Drive (`runs/<tag>.{npy,json,pt}`, `logs/<tag>.log`); the loop skips finished runs, so a disconnect only costs the run in progress.
+- **Grid** (each row overrides `DEFAULTS`; all hidden 64):
+
+| Tag | Change | Question |
+|---|---|---|
+| `gnn_ibm` | IBM defaults, 24h window | does better optimisation close the gap to `lgbm/ABC`? |
+| `gnn_pw10` | positive weight 10 | sensitivity to the class weight |
+| `gnn_w72` | 3-day window | does longer past context help (the longest our rules allow)? |
+| `mlp_ibm` | `name=mlp` | the control under the same settings |
+
+- **Then:** 2 more seeds (1, 2) of the best config, for both `gnn` and `mlp`.
+- **Locally:** `gnn.py runs` (→ `reports/phase3-gnn-runs.csv`) and `gnn.py load <tag> <model>` put the chosen runs into `scores`, then val analysis. Nothing in this task touches test.
+
+On val:
+- paired differences against `lgbm/AB`, `lgbm/ABC` and `mlp`;
 - recall by pattern, with UNLISTED split into ACH and non-ACH;
 - the share of flagged rows that are ACH.
 
-If `gnn/ABC` beats `lgbm/ABC` on val, expand `lgbm/ABG` into its own tasks (with the stacking fix) before Checkpoint B.
+If the best `gnn` beats `lgbm/ABC` on val, expand `lgbm/ABG` into its own tasks (with the stacking fix) before Checkpoint B.
 
 **Acceptance criteria:**
-- [ ] Tuning log saved; chosen config named with its seed spread
-- [ ] Val section of `reports/phase3-results.md` written, with the UNLISTED and ACH-share findings, and the `lgbm/ABG` go / no-go stated
-- [ ] `lgbm/AB` rows still equal the frozen copy
+- [ ] Smoke run on Colab passes (`max_hours=3 max_epochs=1`), then the grid finishes; `reports/phase3-gnn-runs.csv` lists every run with its config, best val PR-AUC and best epoch; the chosen config is named with its seed spread
+- [ ] Chosen `gnn` and `mlp` runs loaded into `scores` (5,078,345 rows each); val section of `reports/phase3-results.md` written, with the UNLISTED and ACH-share findings, and the `lgbm/ABG` go / no-go stated
+- [ ] `lgbm/AB` rows still equal the frozen copy; the T5 baseline `gnn/ABC` kept for comparison
 
-**Verification:** `python src/evaluate.py --split val --phase 3`.
-**Dependencies:** T3, T5
-**Files:** `src/gnn.py`, `reports/phase3-results.md`
+**Verification:** Colab notebook's last cell; locally `python src/gnn.py runs`, then `python src/evaluate.py --split val --phase 3`.
+**Dependencies:** T3, T5 (baseline finished; this branch pushed so Colab can clone it)
+**Files:** `src/gnn.py`, `notebooks/colab_gnn.ipynb`, `reports/phase3-results.md`
 
 ## Checkpoint B: review val with triet (hard stop)
 - [ ] Val results for `lgbm/ABC`, `mlp/ABC`, `gnn/ABC` (and `lgbm/ABG` if built) reviewed **before** touching test

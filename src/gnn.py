@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 import time
@@ -16,6 +17,7 @@ from metrics import pr_auc
 EDGES = ROOT / "data/gnn/edges.npz"
 HEAD = ROOT / "data/gnn/head.npy"
 MODELS = ROOT / "data/models"
+RUNS = ROOT / "data/gnn/runs"
 # positives are ~1 in 1,000; weighting them 100x keeps their gradient visible without the noise of the full ratio
 POS_WEIGHT = 100.0
 SPLITS = ["train", "val", "test", "tail"]
@@ -100,9 +102,10 @@ class EdgeEncoder(nn.Module):
 
 # GINe with reverse message passing: separate convs over incoming and outgoing edges; head on [h_u, h_v, target edge, head_feats]
 class Net(nn.Module):
-    def __init__(self, hidden=64, layers=2, head_dim=0, use_graph=True):
+    def __init__(self, hidden=64, layers=2, head_dim=0, use_graph=True, dropout=0.0, head_dropout=0.0):
         super().__init__()
         self.use_graph = use_graph
+        self.drop, self.drop_head = nn.Dropout(dropout), nn.Dropout(head_dropout)
         self.edge_enc = EdgeEncoder(hidden)
         self.node_enc = nn.Linear(3, hidden)
         mlp = lambda: nn.Sequential(nn.Linear(hidden, hidden), nn.ReLU(), nn.Linear(hidden, hidden))
@@ -116,12 +119,14 @@ class Net(nn.Module):
         if self.use_graph:
             h, ea = self.node_enc(b["x"]), self.edge_enc(*b["edge"])
             for ci, co, mx in zip(self.conv_in, self.conv_out, self.mix):
-                h = torch.relu(mx(torch.cat([ci(h, b["edge_index"], ea), co(h, b["edge_index"].flip(0), ea)], 1)))
+                h = self.drop(torch.relu(mx(torch.cat([ci(h, b["edge_index"], ea), co(h, b["edge_index"].flip(0), ea)], 1))))
             u, v = b["target_index"]
             parts = [h[u], h[v]] + parts
         if head_feats is not None:
             parts.append(head_feats)
-        return self.head(torch.cat(parts, 1)).squeeze(1)
+        # dropout before the last layer, applied here so saved weights keep the head's layer names
+        z = self.drop_head(self.head[1](self.head[0](torch.cat(parts, 1))))
+        return self.head[2](z).squeeze(1)
 
 
 # leakage asserts on every hour, a leaky snapshot that must fail, then forward + backward timing on CPU and GPU
@@ -167,76 +172,116 @@ def bench(window_h=24, hidden=64, head_dim=54):
               f"epoch over {len(train_hours)} train hours ~ {per * len(train_hours) / 60:.1f} min, {mem}")
 
 
-# train hours in time order, early stopping on val PR-AUC, then score every transaction into `scores` as <name>/ABC
-def train(name="gnn", seed=0, hidden=32, window_h=24, max_epochs=30, patience=3):
-    from train import save_scores
+# defaults follow IBM Multi-GNN's GIN settings (model_settings.json): lr ~0.006, class weight ~6, dropout 0.01 / 0.1,
+# batches of 8,192 transactions, up to 100 epochs. The baseline gnn/ABC used lr 0.001, pos_weight 100, whole hours, hidden 32
+DEFAULTS = {"name": "gnn", "seed": 0, "hidden": 64, "window_h": 24, "lr": 0.006, "pos_weight": 6.0, "dropout": 0.01,
+            "head_dropout": 0.1, "batch_size": 8192, "max_epochs": 100, "patience": 10, "max_hours": 0}
 
-    torch.manual_seed(seed)
-    np.random.seed(seed)
-    # CPU by default: at hidden 32 the MX550 reserves 2.17 GB of its 2 GB, spills to shared RAM and runs 3.6x slower than CPU
+
+# train hours (shuffled each epoch), early stopping on val PR-AUC, then score every transaction into data/gnn/runs/<tag>.*
+def train(tag, **cfg):
+    cfg = {**DEFAULTS, **cfg}
+    torch.manual_seed(cfg["seed"])
+    rng = np.random.default_rng(cfg["seed"])
+    # CPU by default: on the 2 GB MX550 the GNN spills to shared RAM and runs 3.6x slower than CPU; Colab sets GNN_DEVICE=cuda
     device = os.environ.get("GNN_DEVICE", "cpu")
     e = dict(np.load(EDGES))
     head = np.load(HEAD)
     tr = e["split"] == 0
     head = (head - head[tr].mean(0)) / (head[tr].std(0) + 1e-6)  # standardized on train rows only
     hour = e["minute"] // 60
-    hours = {s: np.unique(hour[e["split"] == i]) for i, s in enumerate(SPLITS)}
-    model = Net(hidden, head_dim=head.shape[1], use_graph=name == "gnn").to(device)
-    opt = torch.optim.Adam(model.parameters(), 1e-3)
-    loss_fn = nn.BCEWithLogitsLoss(pos_weight=torch.tensor(POS_WEIGHT, device=device))
+    # max_hours > 0 keeps only the first hours of each split: a quick smoke run, not a real result
+    hours = {s: np.unique(hour[e["split"] == i])[:cfg["max_hours"] or None] for i, s in enumerate(SPLITS)}
+    model = Net(cfg["hidden"], head_dim=head.shape[1], use_graph=cfg["name"] == "gnn",
+                dropout=cfg["dropout"], head_dropout=cfg["head_dropout"]).to(device)
+    opt = torch.optim.Adam(model.parameters(), cfg["lr"])
+    loss_fn = nn.BCEWithLogitsLoss(pos_weight=torch.tensor(cfg["pos_weight"], device=device))
     score = np.full(len(hour), np.nan, dtype=np.float32)
 
     def run(hs, learn):
         model.train(learn)
-        total = 0.0
-        for h in hs:
-            b = batch(e, h, window_h, device)
-            with torch.set_grad_enabled(learn):
-                out = model(b, torch.as_tensor(head[b["rows"]], device=device))
-            if learn:
-                loss = loss_fn(out, b["y"])
-                opt.zero_grad()
-                loss.backward()
-                opt.step()
-                total += loss.item()
-            score[b["rows"]] = torch.sigmoid(out).detach().cpu().numpy()
-        return total / len(hs)
+        total, steps = 0.0, 0
+        for h in (rng.permutation(hs) if learn else hs):
+            b = batch(e, h, cfg["window_h"], device)
+            n = len(b["y"])
+            # several updates per hour: the graph is rebuilt per chunk because the weights change in between
+            for idx in np.array_split(rng.permutation(n) if learn else np.arange(n), max(1, -(-n // cfg["batch_size"]))):
+                i = torch.as_tensor(idx, device=device)
+                sub = {**b, "target": (b["target"][0][i], b["target"][1][i]), "target_index": b["target_index"][:, i]}
+                with torch.set_grad_enabled(learn):
+                    out = model(sub, torch.as_tensor(head[b["rows"].start + idx], device=device))
+                if learn:
+                    loss = loss_fn(out, b["y"][i])
+                    opt.zero_grad()
+                    loss.backward()
+                    opt.step()
+                    total, steps = total + loss.item(), steps + 1
+                score[b["rows"].start + idx] = torch.sigmoid(out).detach().cpu().numpy()
+        return total / max(steps, 1)
 
     va = e["split"] == 1
-    best, best_state, waited, t0 = -1.0, None, 0, time.time()
-    for epoch in range(max_epochs):
+    best, best_state, waited, t0, history = -1.0, None, 0, time.time(), []
+    for epoch in range(cfg["max_epochs"]):
         loss = run(hours["train"], True)
         run(hours["val"], False)
-        ap = pr_auc(e["label"][va], score[va])
-        print(f"  {name}/ABC epoch {epoch + 1}: train loss {loss:.4f}, val PR-AUC {ap:.4f}, {time.time() - t0:.0f} s", flush=True)
+        seen = va & ~np.isnan(score)
+        ap = pr_auc(e["label"][seen], score[seen])
+        history.append({"epoch": epoch + 1, "train_loss": loss, "val_pr_auc": ap, "seconds": time.time() - t0})
+        print(f"  {tag} epoch {epoch + 1}: train loss {loss:.4f}, val PR-AUC {ap:.4f}, {time.time() - t0:.0f} s", flush=True)
         if ap > best:
             best, best_state, waited = ap, {k: v.clone() for k, v in model.state_dict().items()}, 0
         else:
             waited += 1
-            if waited >= patience:
+            if waited >= cfg["patience"]:
                 break
     model.load_state_dict(best_state)
     for s in SPLITS:
         run(hours[s], False)
-    assert not np.isnan(score).any(), "every transaction must get a score"
+    assert cfg["max_hours"] or not np.isnan(score).any(), "every transaction must get a score"
     # GPU scatter sums aren't bit-exact run to run, so rescoring may move PR-AUC in the 4th decimal at most
-    assert abs(pr_auc(e["label"][va], score[va]) - best) < 1e-3, "rescoring val must reproduce the best epoch"
-    MODELS.mkdir(exist_ok=True)
-    torch.save(best_state, MODELS / f"{name}_ABC.pt")
-    mem = f"peak VRAM {torch.cuda.max_memory_allocated() / 2**30:.2f} GB, " if device == "cuda" else ""
-    print(f"{name}/ABC: best val PR-AUC {best:.4f}, {time.time() - t0:.0f} s on {device}, {mem}"
-          f"peak process RAM {psutil.Process().memory_info().peak_wset / 2**30:.2f} GB")
+    seen = va & ~np.isnan(score)
+    assert abs(pr_auc(e["label"][seen], score[seen]) - best) < 1e-3, "rescoring val must reproduce the best epoch"
+    mi = psutil.Process().memory_info()
+    summary = {"tag": tag, **cfg, "best_val_pr_auc": best, "best_epoch": int(np.argmax([r["val_pr_auc"] for r in history])) + 1,
+               "epochs_run": len(history), "seconds": time.time() - t0, "device": device,
+               "peak_vram_gb": torch.cuda.max_memory_allocated() / 2**30 if device == "cuda" else None,
+               "peak_ram_gb": getattr(mi, "peak_wset", mi.rss) / 2**30, "history": history}
+    RUNS.mkdir(parents=True, exist_ok=True)
+    np.save(RUNS / f"{tag}.npy", score)
+    torch.save(best_state, RUNS / f"{tag}.pt")
+    (RUNS / f"{tag}.json").write_text(json.dumps(summary, indent=1))
+    print(f"{tag}: best val PR-AUC {best:.4f} at epoch {summary['best_epoch']}, {summary['seconds']:.0f} s on {device} -> {RUNS}")
+
+
+# one row per finished run -> reports/phase3-gnn-runs.csv
+def runs():
     import pandas as pd
 
+    rows = [{k: v for k, v in json.loads(p.read_text()).items() if k != "history"} for p in sorted(RUNS.glob("*.json"))]
+    df = pd.DataFrame(rows).sort_values("best_val_pr_auc", ascending=False)
+    df.to_csv(ROOT / "reports/phase3-gnn-runs.csv", index=False)
+    print(df[["tag", "name", "hidden", "window_h", "lr", "pos_weight", "seed", "best_val_pr_auc", "best_epoch", "epochs_run"]].to_string(index=False))
+
+
+# a finished run's scores into the local `scores` table as <model>/ABC (e.g. gnn.py load gnn_t1 gnn2)
+def load(tag, model):
+    import pandas as pd
+    from train import save_scores
+
+    e = dict(np.load(EDGES))
+    score = np.load(RUNS / f"{tag}.npy")
+    assert len(score) == len(e["tx_id"]) and not np.isnan(score).any()
     con = duckdb.connect(str(DB), config={"memory_limit": "1GB", "threads": 2})
-    df = pd.DataFrame({"tx_id": e["tx_id"], "split": np.array(SPLITS)[e["split"]]})
-    save_scores(con, name, "ABC", df, score)
+    save_scores(con, model, "ABC", pd.DataFrame({"tx_id": e["tx_id"], "split": np.array(SPLITS)[e["split"]]}), score)
 
 
 if __name__ == "__main__":
-    # gnn.py export | bench [window_h] [hidden] | train gnn|mlp [seed] [hidden]
+    # gnn.py export | bench [window_h] [hidden] | train <tag> [key=value ...] | runs | load <tag> <model>
     cmd, args = sys.argv[1], sys.argv[2:]
     if cmd == "train":
-        train(args[0], *map(int, args[1:]))
+        num = lambda v: float(v) if "." in v or "e" in v else int(v)
+        train(args[0], **{k: (v if k == "name" else num(v)) for k, v in (a.split("=") for a in args[1:])})
+    elif cmd in ("runs", "load"):
+        {"runs": runs, "load": load}[cmd](*args)
     else:
         {"export": export, "bench": bench}[cmd](*map(int, args))
