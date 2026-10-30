@@ -1,3 +1,4 @@
+import os
 import sys
 import time
 
@@ -172,7 +173,8 @@ def train(name="gnn", seed=0, hidden=32, window_h=24, max_epochs=30, patience=3)
 
     torch.manual_seed(seed)
     np.random.seed(seed)
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    # CPU by default: at hidden 32 the MX550 reserves 2.17 GB of its 2 GB, spills to shared RAM and runs 3.6x slower than CPU
+    device = os.environ.get("GNN_DEVICE", "cpu")
     e = dict(np.load(EDGES))
     head = np.load(HEAD)
     tr = e["split"] == 0
