@@ -26,6 +26,7 @@ All live in `src/metrics.py`. Run `python src/metrics.py` for the self-check and
 | Uncertainty | `bootstrap_ci`, `paired_bootstrap_ci` | 1,000 resamples of the test set, 95% percentile CI |
 
 - **Why K = 500:** test averages about 431k transactions and 478 laundering transactions per day. 500 alerts per day is about 0.12% of volume and roughly one day's positives, a realistic investigator queue where a near-perfect model could catch most of a day's laundering.
+- **Account level: K = 800 account alerts per day** (approved by triet 2026-11-01). Each account-day is scored by the **max** score over the account's transactions that day, sent or received (`evaluate.py --accounts`). Same rule as the transaction budget: val has about 225k active accounts and 815 positive accounts per day, so 800 is roughly one day's positive accounts (0.36% of active accounts).
 - **"Significantly better":** the paired-bootstrap 95% CI of the difference (model A minus model B, same resamples) excludes 0.
 - **Reporting:** headline numbers come from `test`. `tail` is reported in its own column and never pooled with test. Test is scored once per final model; all tuning happens on val.
 - **Runtime:** a bootstrap over about 860k rows takes roughly 0.3 s per resample, so 1,000× is a few minutes per model.

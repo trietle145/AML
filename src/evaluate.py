@@ -125,6 +125,29 @@ WHERE t.split = 'val' AND s.model = ? AND s.feature_set = ? GROUP BY 1"""
 
 # train + val only: who the UNLISTED launderers are, whether they touch listed schemes or repeat accounts,
 # whether past model scores already flag their accounts, and how far a model trained on UNLISTED alone gets
+# val only: one alert candidate per account and day, scored by the max over the account's transactions on either side;
+# label as in decisions.md (>= 1 laundering transaction sent or received that day). P/R at several K to choose the account budget
+def analyze_accounts(con, models, prefix, boot):
+    rows = []
+    for name in models:
+        a = con.sql(f"""
+            WITH s AS (SELECT t.day, t.from_acct, t.to_acct, t.is_laundering y, s.score FROM scores s JOIN transactions t USING (tx_id)
+                       WHERE s.split = 'val' AND s.model || '/' || s.feature_set = '{name}'),
+                 e AS (SELECT day, from_acct acct, y, score FROM s UNION ALL SELECT day, to_acct, y, score FROM s)
+            SELECT day, acct, MAX(y) y, MAX(score) score FROM e GROUP BY 1, 2 ORDER BY 1, 2
+        """).df()
+        auc, lo, hi = bootstrap_ci(a.y, a.score, n=boot)
+        row = {"model": name, "acct_days": len(a), "positives": int(a.y.sum()), "pr_auc": auc, "ci_lo": lo, "ci_hi": hi}
+        for k in (250, 500, 800, 1000, 2000):
+            row[f"p@{k}"], row[f"r@{k}"] = precision_recall_at_k_per_day(a.y, a.score, a.day, k=k)
+        rows.append(row)
+        print(f"{datetime.datetime.now():%H:%M} {name}: account-day PR-AUC {auc:.4f}")
+    out = pd.DataFrame(rows)
+    out.to_csv(REPORTS / f"{prefix}val-accounts.csv", index=False)
+    print(out.round(4).T.to_string())
+    assert (out.acct_days == out.acct_days.iloc[0]).all() and (out.positives == out.positives.iloc[0]).all()
+
+
 # design analysis only (sets set D's windows and caps, never a feature): what each listed pattern looks like,
 # on attempts that lie entirely in train
 def analyze_patterns(con):
@@ -249,7 +272,11 @@ def main():
     ap.add_argument("--pairs", help="comma-separated a:b pairs for paired differences, instead of PAIRS[phase]; b may be outside --models")
     ap.add_argument("--analyze-unlisted", action="store_true", help="train + val diagnosis of UNLISTED laundering (--models: past-score models, default lgbm/ABC,gnn/ABC); writes reports/phase4-unlisted-*")
     ap.add_argument("--analyze-patterns", action="store_true", help="train-only anatomy of the listed patterns (design input for set D); writes reports/phase4-pattern-anatomy.csv")
+    ap.add_argument("--accounts", action="store_true", help="val-only account-level alerts for --models (max score per account and day); writes reports/phaseN-val-accounts.csv")
     args = ap.parse_args()
+    if args.accounts:
+        con = duckdb.connect(str(DB), read_only=True, config={"memory_limit": "700MB", "threads": 2})
+        return analyze_accounts(con, args.models.split(","), "" if args.phase == 2 else f"phase{args.phase}-", args.boot)
     if args.analyze_patterns:
         return analyze_patterns(duckdb.connect(str(DB), read_only=True, config={"memory_limit": "700MB", "threads": 2}))
     if args.analyze_unlisted:

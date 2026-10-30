@@ -114,17 +114,19 @@ Per-row TreeSHAP contributions of `lgbm/ABC` (`pred_contrib`) on val laundering 
 
 **Cycle-window check (throwaway, 2026-11-01):** val CYCLE rows closing a time-ordered cycle (≤ 10): 8 of 66 at 3d, **11 of 66 at 5d, 7d and unlimited** (licit 0.07% → 0.17%). Of the 24 CYCLE attempts touching val, **13 finish after val** (closing payment in test/tail), so val holds only their opening payments; of the 11 that close inside val, the features already catch 10. Train cycles are time-ordered (19/21) and the last payment closes the loop (20/21). **Per-pattern recall on val and test is structurally capped for slow patterns:** attempts take ~3 days, val and test are 2 days each, and a past-only feature can only fire on the completing payment. Not fixable without changing the locked split; goes in the write-up.
 
-### Task 9: Account-level alerts (S)
+### Task 9: Account-level alerts (S) — DONE 2026-11-01
 **Description:** roll transaction scores up to one alert per account per day (max score). Account label as in `decisions.md` (≥ 1 laundering transaction that day). Precision and recall at K accounts per day.
 **Acceptance:** account-level table on val next to transaction-level; K chosen and written into `decisions.md` (triet approves).
 **Dependencies:** Checkpoint A (uses the chosen model)
 **Files:** `src/evaluate.py`, `docs/decisions.md`
+**Outcome:** `evaluate.py --accounts --phase 4 --models …` (val only, ~1 min) writes `reports/phase4-val-accounts.csv`. Val: 450,244 account-days, 1,629 positive (~815 a day of ~225k active). Account-day PR-AUC: `lgbm/ABC` 0.432 [0.407, 0.457], `mlp_s0` 0.440, `ens/ABC` 0.459. **K = 800 accounts/day** (triet, in `decisions.md`): P / R `lgbm/ABC` 0.42 / 0.42, `mlp_s0` 0.43 / 0.42, `ens/ABC` 0.43 / 0.42, close to the transaction-level 0.456 / 0.440. The ensemble's lead shows only on short queues (500/day: P 0.62 vs 0.57).
 
-### Task 10: Explanations (M)
+### Task 10: Explanations (M) — DONE 2026-11-01
 **Description:** per-alert feature contributions from LightGBM's `pred_contrib=True` (exact TreeSHAP, no new package); plain-English reasons from each alert's top 3 contributions (e.g. "received from 14 accounts in 3 days; forwarded 95% within 1 h; first payment to this receiver"); 10 val alerts checked by hand against the raw transactions.
 **Acceptance:** reasons for every val alert at 500/day, built from contributions **summed per feature group** (correlated features such as `pair_min_since_last` and `pair_cnt_3d` split credit into large opposite values); contributions sum to the raw score (assert); the 10 hand-checked examples read correctly.
 **Dependencies:** Checkpoint A
 **Files:** `src/explain.py`, `reports/phase4-alert-examples.md`
+**Outcome:** `src/explain.py` (~1 min, val only) explains all 1,000 val alerts of `lgbm/ABC` at 500/day → `reports/phase4-val-alert-reasons.csv`. TreeSHAP contributions reproduce the stored scores (assert); 62 features in **8 groups** (assert): features that encode the same fact share a group (account activity + pair history + receiver fan-in; amount + both sides' usual amounts), which cuts the median sum|group| / |net| from 2.23 per feature (1.55 with 13 groups) to 1.22. Top 3 positive groups → sentences from the alert's own values. **10 alerts (6 patterns incl. UNLISTED + 4 false alarms) checked against raw `transactions` rows: all facts match** (`reports/phase4-alert-examples.md`). Findings: ACH leads 278 of 456 laundering alerts and 251 of 544 false alarms; new-account facts ("account history") lead 116 / 156 and read identically for a STACK hop and a licit payment, which is where the false alarms come from. Limit: a few rows still have ±100 log-odds offsetting groups, so their reason order is less reliable.
 
 ### Checkpoint B (hard stop)
 - [ ] triet reviews val results and picks at most 2 finalists for test
@@ -136,6 +138,7 @@ Per-row TreeSHAP contributions of `lgbm/ABC` (`pred_contrib`) on val laundering 
 ### Task 12 (end): IBM Multi-GNN reference run (M)
 **Description:** run IBM's code unchanged on HI-Small in a separate Colab notebook (`--model gin --emlps --reverse_mp --ego --ports`), map their test predictions to our `tx_id`s, evaluate with `metrics.py` including recall by pattern, on their test range and on ours. Label it "IBM reference (transductive: test graph includes later edges; test includes tail)". Check the repo's licence before reusing any code.
 **Acceptance:** their score next to ours on both ranges, with the protocol differences listed; their UNLISTED recall reported.
+**Write-up context (triet, 2026-11-01):** after this run, put three of our rules into numbers next to the published results: the **2-day val/test windows** (slow attempts cut; 13 of 24 val CYCLE attempts finish in test), **strictly-past features** (this run's transductive-vs-ours gap), and **no account or bank IDs** (memorising repeat accounts; 34.6% of UNLISTED rows touch an account that laundered earlier).
 **Files:** a separate notebook; `reports/phase4-results.md`
 
 ## Dropped (with reasons)
