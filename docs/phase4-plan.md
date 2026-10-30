@@ -88,19 +88,22 @@ Per-row TreeSHAP contributions of `lgbm/ABC` (`pred_contrib`) on val laundering 
 **Files:** `src/features.py`
 **Outcome:** built the amount part only: `SET_D` = 12 columns, per side (sender's past sends / receiver's past receipts) and window (24h, 3d): `amt_z` (z-score vs own mean and sd), `amt_vs_med`, `amt_vs_max`, strictly earlier rows (`d_query`, `features.py d` builds D alone, ~1 min). `features.py --check d`: 0 mismatched cells on 277 stress rows; leaky variant (frame ends at the current row) caught with 2,205 bad cells in all 12 columns. Drift: no test account above the train max. Overlap with B's `amt_vs_mean`: rank correlation 0.63–0.94 (highest `amt_vs_max`), none > 0.95, all kept. Medians laundering vs licit: `in_amt_vs_med_3d` 1.99 vs 1.00, `in_amt_vs_max_3d` 0.72 vs 0.32, `out_amt_vs_med_3d` 1.40 vs 1.00. **Skipped for now:** timing-gap moments, forwarding speed and structuring (no support in the near-miss check; add only if Task 7 shows the amount part helps).
 
-### Task 7: `lgbm/ABCD` on val (S)
+### Task 7: `lgbm/ABCD` on val (S) — DONE 2026-11-01, no gain
 **Description:** add `ABCD` (and, if Task 6 is large, `ABC+cycles` / `ABC+sg` ablations) to `FEATURE_SETS`; train with the Phase 2 grid; evaluate on val, paired against `lgbm/ABC`.
 **Acceptance:**
-- [ ] Paired val PR-AUC difference vs `lgbm/ABC`, iid and cluster CIs
-- [ ] Recall by pattern **at 500/day** and at the val threshold, with CIs, for STACK, BIPARTITE, CYCLE, RANDOM, UNLISTED
-- [ ] `lgbm/AB` and `lgbm/ABC` rows in `scores` unchanged (max diff 0)
+- [x] Paired val PR-AUC difference vs `lgbm/ABC`, iid and cluster CIs
+- [x] Recall by pattern **at 500/day** and at the val threshold, with CIs, for STACK, BIPARTITE, CYCLE, RANDOM, UNLISTED
+- [x] `lgbm/AB` and `lgbm/ABC` rows in `scores` unchanged (max diff 0)
 **Verification:** `train.py --phase 4 lgbm ABCD` then `evaluate.py --split val --phase 4 --models lgbm/ABC,lgbm/ABCD --pairs lgbm/ABCD:lgbm/ABC`.
 **Dependencies:** Task 6
 **Files:** `src/train.py`, `src/evaluate.py` (`--phase 4`), `reports/phase4-val-*.csv`
+**Outcome:** grid (~7 min, `logs/train_lgbm_ABCD.log`) picked 63 leaves, lr 0.05, min_child 500, 179 trees. `lgbm/AB` scores equal the frozen copy (max diff 0); `lgbm/ABC` val PR-AUC reproduces 0.4439. Val (`logs/phase4_val_abcd.log`, `reports/phase4-val-*.csv`): `lgbm/ABCD` PR-AUC 0.4392 vs 0.4439, **paired −0.005 [−0.022, 0.012], cluster [−0.021, 0.013]: not significant**. P/R@500/day 0.455 / 0.439 vs 0.456 / 0.440 (same). F1 at the val threshold 0.493 vs 0.479. Recall by pattern at 500/day (new `phase4-val-recall-by-pattern-at-k.csv`): CYCLE 0.44 → 0.56 (+8 rows), STACK 0.53 → 0.48 (−7), RANDOM 0.45 → 0.37 (−3), BIPARTITE 0.49 → 0.47 (−1), UNLISTED 5 → 8 of 379; the rest within ±2 rows. **Set D reshuffles which near-miss rows reach the top 500 instead of adding any**: the amount-vs-usual signal was already in set B's `amt_vs_mean`. Code: `evaluate.py --phase 4` (default pair `lgbm/ABCD:lgbm/ABC`), recall by pattern at 500/day for every phase, earlier-phase test guard covers Phases 2–3; `metrics.top_k_per_day` (identical results to before).
 
 ### Checkpoint A (review with triet)
-- [ ] Did set D move the near-miss patterns at 500/day? If not, the write-up says the multi-hop gains in the literature don't carry over to a past-only ≤ 3d setting, and Phase 4 moves straight to Tasks 9–10.
-- [ ] UNLISTED reported as the ceiling with Task 1's and the literature's evidence
+- [x] Did set D move the near-miss patterns at 500/day? If not, the write-up says the multi-hop gains in the literature don't carry over to a past-only ≤ 3d setting, and Phase 4 moves straight to Tasks 9–10.
+- [x] UNLISTED reported as the ceiling with Task 1's and the literature's evidence
+
+**Checkpoint A outcome (triet, 2026-11-01): no.** Set D didn't improve `lgbm/ABC` (Task 7); long cycles and bicliques/scatter-gather were dropped before building because they reach almost no near-miss rows (Tasks 3, 5). **Base stays `lgbm/ABC`; no more feature work.** Set D lives only on branch `feature-set-d` (archived, not merged); Phase 4 continues from `main` on branch `ensemble` with Task 8.
 
 ### Task 8: Ensemble (S)
 **Description:** rank-average the best LightGBM (`lgbm/ABCD` or `lgbm/ABC`) with the MLP. They're strong on different patterns (LightGBM on FAN-IN and STACK, the MLP on FAN-OUT and gather/scatter), so the blend may help at 500/day. Uses the existing `mlp_s0–s2` scores (mean over seeds, no seed picked on val); retraining the MLP on set D needs Colab and is out of scope unless the blend is promising.
