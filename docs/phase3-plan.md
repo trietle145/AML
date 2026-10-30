@@ -225,20 +225,32 @@ Changes made on the way:
 - **Decision:** **hidden 32 on the MX550** (2.5× CPU), with CPU as the fallback on any CUDA error. Hidden 64 runs only on CPU, viable once the D: page file is active.
 - **Machine:** the commit limit was the root cause of every out-of-memory failure since Phase 2 (system log: "Out of Virtual Memory" popups on 2026-10-29). triet set a 16–32 GB page file on D: (registry confirmed); it takes effect after the next restart.
 
-## Task 5: Train `gnn/ABC` and `mlp/ABC`, score every row (M)
+## Task 5: Train `gnn/ABC` and `mlp/ABC`, score every row (M) — DONE 2026-10-30
 
 **Description:** A training loop over train-hour snapshots in time order, early stopping on val PR-AUC (patience 3 epochs), fixed seed. Score every split (tail too, from earlier edges only) into `scores` with `train.py`'s `save_scores`. `mlp/ABC` uses the same loop with the graph embeddings switched off.
 
 **Acceptance criteria:**
-- [ ] `gnn/ABC` and `mlp/ABC` each have one score for every `tx_id` (5,078,345), no NaNs
-- [ ] `gnn/ABC` val PR-AUC beats `lgbm/A` (0.075); if not, debug before tuning (feature scaling, positive weight; `mlp/ABC` shows what the head alone gets)
-- [ ] Runtime and peak memory logged; the same seed reproduces val PR-AUC within 0.005
+- [x] `gnn/ABC` and `mlp/ABC` each have one score for every `tx_id` (5,078,345), no NaNs
+- [x] `gnn/ABC` val PR-AUC beats `lgbm/A` (0.075); if not, debug before tuning (feature scaling, positive weight; `mlp/ABC` shows what the head alone gets)
+- [x] Runtime and peak memory logged; ~~the same seed reproduces val PR-AUC within 0.005~~ *not rerun: replaced by T6's seed runs, which measure the spread across seeds*
 
 **Verification:** `python src/gnn.py train`, then `python src/evaluate.py --split val --phase 3 --boot 200`.
 **Dependencies:** T4
 **Files:** `src/gnn.py`
 
-## Task 6: GNN grid on Colab and val analysis (M) — revised 2026-10-30
+**Outcome (baseline settings: lr 0.001, positive weight 100, one update per hour, hidden 32, 24h window):**
+
+| Model | Best val PR-AUC | Epoch | Run | Peak memory |
+|---|---|---|---|---|
+| `mlp/ABC` | 0.4294 | 30 (hit the cap, still improving) | 11 min on the MX550 | 0.36 GB VRAM |
+| `gnn/ABC` | **0.4623** | 26 (early stop at 29) | 2h20m on CPU | 4.29 GB RAM |
+
+- **Both in `scores`** with 5,078,345 rows; `lgbm/AB` still equals the frozen copy. Epoch histories are in `logs/mlp_ABC.log` and `logs/gnn_ABC.log`.
+- **`gnn/ABC` was ahead of `mlp/ABC` at every epoch from epoch 3** (+0.005 to +0.03) and passed `lgbm/ABC` (0.444) at epoch 19.
+- **A first GPU attempt ran at ~26 min per epoch** (the 2 GB MX550 spilled into shared RAM) and was stopped after 5 epochs. Profiling showed CPU forward/backward at 1.46 s per hour vs 5.25 s on the GPU, so training now defaults to CPU (`GNN_DEVICE`).
+- **The slow learning (lr 0.001, one step per hour) led to T6's IBM-style settings.** The first of those, `gnn_ibm` on a Colab T4 (hidden 64, lr 0.006, positive weight 6, 8,192-transaction batches), reached **val 0.4829 at epoch 13 in 41 min**. Val was noisy (±0.03 epoch to epoch), with a loss spike at epochs 17–19.
+
+## Task 6: GNN grid on Colab and val analysis (M) — revised 2026-10-30, DONE 2026-10-30
 
 **Why revised:** the T5 baseline (lr 0.001, positive weight 100, one update per hour, hidden 32, 24h window) learns slowly: it is still improving after 15 epochs at ~4.4 min each on CPU. The IBM Multi-GNN code (`model_settings.json`, `util.py`, `train_util.py`) trains GIN with **lr ≈ 0.006, class weight ≈ 6, dropout 0.01 / 0.1, batches of 8,192 transactions, hidden 66, up to 100 epochs**. Those settings become `DEFAULTS` in `src/gnn.py`. IBM's *time handling* is **not** copied: its val/test graphs include later edges of the same period, which our past-only rule forbids.
 
@@ -265,36 +277,63 @@ On val:
 If the best `gnn` beats `lgbm/ABC` on val, expand `lgbm/ABG` into its own tasks (with the stacking fix) before Checkpoint B.
 
 **Acceptance criteria:**
-- [ ] Smoke run on Colab passes (`max_hours=3 max_epochs=1`), then the grid finishes; `reports/phase3-gnn-runs.csv` lists every run with its config, best val PR-AUC and best epoch; the chosen config is named with its seed spread
-- [ ] Chosen `gnn` and `mlp` runs loaded into `scores` (5,078,345 rows each); val section of `reports/phase3-results.md` written, with the UNLISTED and ACH-share findings, and the `lgbm/ABG` go / no-go stated
-- [ ] `lgbm/AB` rows still equal the frozen copy; the T5 baseline `gnn/ABC` kept for comparison
+- [x] Smoke run on Colab passes (`max_hours=3 max_epochs=1`), then the grid finishes; `reports/phase3-gnn-runs.csv` lists every run with its config, best val PR-AUC and best epoch; the chosen config is named with its seed spread
+- [x] Chosen `gnn` and `mlp` runs loaded into `scores` (5,078,345 rows each); val section of `reports/phase3-results.md` written, with the UNLISTED and ACH-share findings, and the `lgbm/ABG` go / no-go stated
+- [x] `lgbm/AB` rows still equal the frozen copy; the T5 baseline `gnn/ABC` kept for comparison
 
 **Verification:** Colab notebook's last cell; locally `python src/gnn.py runs`, then `python src/evaluate.py --split val --phase 3`.
 **Dependencies:** T3, T5 (baseline finished; this branch pushed so Colab can clone it)
 **Files:** `src/gnn.py`, `notebooks/colab_gnn.ipynb`, `reports/phase3-results.md`
 
+**Interim results (2026-10-30, Colab T4, single seed, val; seeds 1–2 of the `gnn_ibm` settings still running):**
+
+| Run | Change from `DEFAULTS` | Best val PR-AUC | Best epoch / run | Time |
+|---|---|---|---|---|
+| `gnn_ibm` | none (hidden 64, lr 0.006, pos_weight 6, 24h) | **0.4829** | 13 / 23 | 41 min |
+| `gnn_pw10` | positive weight 10 | 0.4262 | 6 / 16 | 29 min |
+| `gnn_w72` | 3-day window | 0.4477 | 8 / 18 | 61 min |
+| `mlp_ibm` | `name=mlp` (no message passing) | **0.4765** | 8 / 18 | 6 min |
+
+- **The training settings did most of the work.** Both the MLP (0.429 → 0.477) and the GNN (0.462 → 0.483) gained about the same from IBM-style settings. With identical inputs (A + B + C) and training, **message passing adds only +0.006** (`gnn_ibm` − `mlp_ibm`), which may be within seed noise. The seeds decide.
+- **Interim conclusion:** hand-made graph features (set C) help (+0.05 over `lgbm/AB`, significant); a learned graph (GNN) on top of them adds about nothing measurable.
+- **`gnn_w72` diverged at epoch 10:** gradient explosion, train loss 357, then a dead model at val 0.0011. Its epoch-8 weights were kept. Not rerun, by triet's call; future GNN runs use gradient clipping.
+- **Positive weight 10 is clearly worse than 6** (0.426 vs 0.483), which confirms that the baseline's 100 was far too high.
+
+**Outcome (2026-10-30):** full write-up in `reports/phase3-results.md` (val section).
+- **Seeds:** `gnn_best_s1` (unclipped) diverged at epoch 4 and was stopped. `gnn.py` then got gradient clipping (`clip=1.0` default) and a divergence stop (train loss > 10× its minimum), commit `4e6cc86`. Seeds rerun on Colab: `gnn_clip_s0` diverged at epoch 3 even with clipping (excluded); `gnn_clip_s1` 0.4633, `gnn_clip_s2` 0.4633; `mlp_best_s1` 0.4719, `mlp_best_s2` 0.4642.
+- **Loaded into `scores`** (via `gnn.py load`): `gnn_s0` = `gnn_ibm`, `gnn_s1`, `gnn_s2`, `mlp_s0` = `mlp_ibm`, `mlp_s1`, `mlp_s2` (all `/ABC`, 5,078,345 rows each). `lgbm/AB` still equals the frozen copy.
+- **Seed means:** GNN **0.470 ± 0.011**, MLP **0.471 ± 0.006** (val PR-AUC).
+- **Paired GNN − MLP per seed:** +0.007, −0.009, −0.001, every CI includes 0 (iid and cluster). **Message passing adds nothing measurable.**
+- **Against `lgbm/ABC`:** the neural nets are +0.02 to +0.04, significant for 3 of 6 seeds. At 500 alerts/day all models sit at ~0.45–0.48 precision and ~0.44–0.46 recall.
+- **Recall by pattern:** the neural nets are better on fan-out and gather/scatter and worse on stack and bipartite. UNLISTED is ~0 for every model.
+- **`lgbm/ABG`: no-go.** The MLP matches the GNN without graph embeddings, so they would add nothing.
+- **Stability:** 2 of 5 GNN runs diverged (`gnn_w72`, `gnn_clip_s0`), 0 of 4 MLP runs. Clipping doesn't stop it under Adam; lr 0.006 is too high for the GNN.
+- **Code:** `evaluate.py` gained `--pairs a:b,...` and filters `--models` in SQL.
+- **Command:** `python -u src/evaluate.py --split val --phase 3 --models lgbm/AB,lgbm/ABC,gnn/ABC,mlp/ABC,gnn_s0/ABC,gnn_s1/ABC,gnn_s2/ABC,mlp_s0/ABC,mlp_s1/ABC,mlp_s2/ABC --pairs lgbm/ABC:lgbm/AB,gnn_s0/ABC:mlp_s0/ABC,gnn_s1/ABC:mlp_s1/ABC,gnn_s2/ABC:mlp_s2/ABC,gnn_s0/ABC:lgbm/ABC,gnn_s1/ABC:lgbm/ABC,gnn_s2/ABC:lgbm/ABC,mlp_s0/ABC:lgbm/ABC,mlp_s1/ABC:lgbm/ABC,mlp_s2/ABC:lgbm/ABC` (~45 min; it rewrites the `phase3-val-*.csv` files, which still include T3's `lgbm/ABC` − `lgbm/AB` pair).
+
 ## Checkpoint B: review val with triet (hard stop)
-- [ ] Val results for `lgbm/ABC`, `mlp/ABC`, `gnn/ABC` (and `lgbm/ABG` if built) reviewed **before** touching test
-- [ ] triet confirms which models go to test
+- [x] Val results for `lgbm/ABC`, `mlp/ABC`, `gnn/ABC` (and `lgbm/ABG` if built) reviewed **before** touching test
+- [x] triet confirms which models go to test
 
 ---
 
-## Task 7: Score test once and write results (S)
+## Task 7: Score test once and write results (S) — DONE 2026-10-31
 
 **Description:** `python src/evaluate.py --split test --final --phase 3 --models …`, then `--split tail`. Val thresholds, 1,000 resamples, iid and attempt-cluster, paired differences as listed, recall by pattern with CIs. Write the test, tail and conclusion sections of `reports/phase3-results.md`, and one line in `decisions.md` naming the model Phase 4 explains.
 
 **Acceptance criteria:**
-- [ ] Each new model scored on test once and logged with the date; Phase 2 files untouched
-- [ ] Headline answer stated plainly: is each new model significantly better than `lgbm/AB` (CI excludes 0) under iid **and** cluster CIs; UNLISTED recall with CIs
-- [ ] `decisions.md` names the Phase 4 model (if the GNN wins but `lgbm/ABC` or `lgbm/ABG` is close, prefer the explainable one and say why)
+- [x] Each new model scored on test once and logged with the date; Phase 2 files untouched
+- [x] Headline answer stated plainly: is each new model significantly better than `lgbm/AB` (CI excludes 0) under iid **and** cluster CIs; UNLISTED recall with CIs
+- [x] `decisions.md` names the Phase 4 model (if the GNN wins but `lgbm/ABC` or `lgbm/ABG` is close, prefer the explainable one and say why)
 
 **Verification:** numbers regenerate from `scores` with the logged commands.
 **Dependencies:** Checkpoint B
 **Files:** `src/evaluate.py` (if needed), `reports/phase3-results.md`, `docs/decisions.md`
+**Outcome (2026-10-30):** Checkpoint B: triet picked `lgbm/ABC` + all six seeds (`gnn_s0–s2`, `mlp_s0–s2`), so no seed is chosen on val. Test 22:46–22:57 (`logs/t6_test.log`; `evaluate.py` now prints a timestamped line per model and pair), tail right after (`logs/t6_tail.log`). Test PR-AUC: `lgbm/ABC` 0.345 vs `lgbm/AB` 0.292, paired +0.053 [0.024, 0.080], cluster [0.022, 0.084], **significant**. GNN 0.375 ± 0.003, MLP 0.369 ± 0.002; GNN − MLP +0.002 / +0.006 / +0.011, none significant under both CIs. Neural nets − `lgbm/ABC` +0.023 to +0.034 (significant under both for `gnn_s1`, `gnn_s2`), but at 500 alerts/day `lgbm/ABC` ties or wins (P 0.389, R 0.407). UNLISTED recall 0.8–3.2%. Tail 0.95–0.97 for all, not informative. Write-up: `reports/phase3-results.md`. Phase 2 report files untouched. **Phase 4 model:** `lgbm/ABC`, approved by triet 2026-10-31 (no more neural nets); written to `decisions.md` on branch `unlisted-diagnosis`. Next: Checkpoint C.
 
 ## Checkpoint C: Phase 3 complete
 - [ ] `features.py`, `train.py lgbm ABC --phase 3` and `gnn.py export train` rebuild everything; `lgbm/AB` still equals the frozen copy
-- [ ] Results reviewed by triet
+- [x] Results reviewed by triet (2026-10-31)
 
 ---
 
