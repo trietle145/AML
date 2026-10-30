@@ -8,9 +8,15 @@ import torch
 from torch import nn
 from torch_geometric.nn import GINEConv
 
+from features import SET_B, SET_C
 from load import DB, EXPECTED_ROWS, ROOT
+from metrics import pr_auc
 
 EDGES = ROOT / "data/gnn/edges.npz"
+HEAD = ROOT / "data/gnn/head.npy"
+MODELS = ROOT / "data/models"
+# positives are ~1 in 1,000; weighting them 100x keeps their gradient visible without the noise of the full ratio
+POS_WEIGHT = 100.0
 SPLITS = ["train", "val", "test", "tail"]
 # model inputs per edge (set A, encoded); tx_id, split and label are kept out of this list on purpose
 EDGE_NUM = ["log_amount_usd", "hour", "is_cross_bank", "is_currency_mismatch", "is_self_transfer"]
@@ -19,7 +25,7 @@ EDGE_CAT = ["fmt", "pay_cur", "recv_cur"]
 
 # all transactions sorted by time, accounts and categories as small ints; minute = minutes since Sep 1 00:00
 def export():
-    con = duckdb.connect(str(DB), read_only=True, config={"memory_limit": "700MB", "threads": 2})
+    con = duckdb.connect(str(DB), read_only=True, config={"memory_limit": "2GB", "threads": 4})
     e = con.sql("""
         WITH accts AS (SELECT a, row_number() OVER (ORDER BY a) - 1 i
                        FROM (SELECT from_acct a FROM transactions UNION SELECT to_acct FROM transactions)),
@@ -45,6 +51,14 @@ def export():
     np.savez(EDGES, **e)
     print(f"edges: {n:,} rows, {e['src'].max() + 1:,} accounts, {EDGES.stat().st_size / 2**20:.0f} MB -> {EDGES}")
 
+    # the head's per-transaction B + C columns, tx_id order; all non-negative and heavy-tailed, so NULL -> 0 then log1p (as in lr)
+    cols = SET_B + SET_C
+    h = con.sql(f"SELECT {', '.join(f'COALESCE({c}, 0)::FLOAT' for c in cols)} FROM features ORDER BY tx_id").fetchnumpy()
+    h = np.stack([np.asarray(v) for v in h.values()], 1)
+    assert h.shape == (n, len(cols)) and h.min() >= 0, (h.shape, h.min())
+    np.save(HEAD, np.log1p(h))
+    print(f"head features: {h.shape[1]} columns (B + C) -> {HEAD}")
+
 
 # edges usable for hour h: graph = [h - window, h), targets = [h, h + 1); leak=True wrongly includes hour h itself
 def snapshot(minute, h, window_h=24, leak=False):
@@ -66,7 +80,7 @@ def batch(e, h, window_h=24, device="cpu"):
     deg = np.stack([np.ones(k), np.log1p(np.bincount(dst, minlength=k)), np.log1p(np.bincount(src, minlength=k))], 1)
     tt = lambda a: torch.as_tensor(a, device=device)
     edge = lambda s: (tt(np.stack([e[c][s] for c in EDGE_NUM], 1)), tt(np.stack([e[c][s].astype(np.int64) for c in EDGE_CAT], 1)))
-    return {"x": tt(deg.astype(np.float32)), "edge_index": tt(np.stack([src, dst]).astype(np.int64)), "edge": edge(g),
+    return {"rows": t, "x": tt(deg.astype(np.float32)), "edge_index": tt(np.stack([src, dst]).astype(np.int64)), "edge": edge(g),
             "target_index": tt(np.stack([inv[2 * ng:2 * ng + nt], inv[2 * ng + nt:]]).astype(np.int64)), "target": edge(t),
             "y": tt(e["label"][t].astype(np.float32))}
 
@@ -152,5 +166,75 @@ def bench(window_h=24, hidden=64, head_dim=54):
               f"epoch over {len(train_hours)} train hours ~ {per * len(train_hours) / 60:.1f} min, {mem}")
 
 
+# train hours in time order, early stopping on val PR-AUC, then score every transaction into `scores` as <name>/ABC
+def train(name="gnn", seed=0, hidden=32, window_h=24, max_epochs=30, patience=3):
+    from train import save_scores
+
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    e = dict(np.load(EDGES))
+    head = np.load(HEAD)
+    tr = e["split"] == 0
+    head = (head - head[tr].mean(0)) / (head[tr].std(0) + 1e-6)  # standardized on train rows only
+    hour = e["minute"] // 60
+    hours = {s: np.unique(hour[e["split"] == i]) for i, s in enumerate(SPLITS)}
+    model = Net(hidden, head_dim=head.shape[1], use_graph=name == "gnn").to(device)
+    opt = torch.optim.Adam(model.parameters(), 1e-3)
+    loss_fn = nn.BCEWithLogitsLoss(pos_weight=torch.tensor(POS_WEIGHT, device=device))
+    score = np.full(len(hour), np.nan, dtype=np.float32)
+
+    def run(hs, learn):
+        model.train(learn)
+        total = 0.0
+        for h in hs:
+            b = batch(e, h, window_h, device)
+            with torch.set_grad_enabled(learn):
+                out = model(b, torch.as_tensor(head[b["rows"]], device=device))
+            if learn:
+                loss = loss_fn(out, b["y"])
+                opt.zero_grad()
+                loss.backward()
+                opt.step()
+                total += loss.item()
+            score[b["rows"]] = torch.sigmoid(out).detach().cpu().numpy()
+        return total / len(hs)
+
+    va = e["split"] == 1
+    best, best_state, waited, t0 = -1.0, None, 0, time.time()
+    for epoch in range(max_epochs):
+        loss = run(hours["train"], True)
+        run(hours["val"], False)
+        ap = pr_auc(e["label"][va], score[va])
+        print(f"  {name}/ABC epoch {epoch + 1}: train loss {loss:.4f}, val PR-AUC {ap:.4f}, {time.time() - t0:.0f} s", flush=True)
+        if ap > best:
+            best, best_state, waited = ap, {k: v.clone() for k, v in model.state_dict().items()}, 0
+        else:
+            waited += 1
+            if waited >= patience:
+                break
+    model.load_state_dict(best_state)
+    for s in SPLITS:
+        run(hours[s], False)
+    assert not np.isnan(score).any(), "every transaction must get a score"
+    # GPU scatter sums aren't bit-exact run to run, so rescoring may move PR-AUC in the 4th decimal at most
+    assert abs(pr_auc(e["label"][va], score[va]) - best) < 1e-3, "rescoring val must reproduce the best epoch"
+    MODELS.mkdir(exist_ok=True)
+    torch.save(best_state, MODELS / f"{name}_ABC.pt")
+    mem = f"peak VRAM {torch.cuda.max_memory_allocated() / 2**30:.2f} GB, " if device == "cuda" else ""
+    print(f"{name}/ABC: best val PR-AUC {best:.4f}, {time.time() - t0:.0f} s on {device}, {mem}"
+          f"peak process RAM {psutil.Process().memory_info().peak_wset / 2**30:.2f} GB")
+    import pandas as pd
+
+    con = duckdb.connect(str(DB), config={"memory_limit": "1GB", "threads": 2})
+    df = pd.DataFrame({"tx_id": e["tx_id"], "split": np.array(SPLITS)[e["split"]]})
+    save_scores(con, name, "ABC", df, score)
+
+
 if __name__ == "__main__":
-    {"export": export, "bench": bench}[sys.argv[1]]()
+    # gnn.py export | bench [window_h] [hidden] | train gnn|mlp [seed] [hidden]
+    cmd, args = sys.argv[1], sys.argv[2:]
+    if cmd == "train":
+        train(args[0], *map(int, args[1:]))
+    else:
+        {"export": export, "bench": bench}[cmd](*map(int, args))

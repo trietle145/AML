@@ -192,7 +192,7 @@ Changes made on the way:
 
 ---
 
-## Task 4: GNN data, snapshots and a timing slice (M, highest risk)
+## Task 4: GNN data, snapshots and a timing slice (M, highest risk) — DONE 2026-10-30
 
 **Description:**
 - **Install** torch and PyG, pinned in `requirements.txt` (CUDA wheel if the MX550 wins the bench, CPU otherwise).
@@ -201,13 +201,29 @@ Changes made on the way:
 - **Timing slice:** forward and backward of the planned model on 5 train snapshots, on CPU and on the MX550, logging seconds and peak RAM/VRAM.
 
 **Acceptance criteria:**
-- [ ] Export round-trips: 5,078,345 rows, `tx_id` order matches `ts` order, no label or pattern columns among model inputs
-- [ ] Leakage assert on every snapshot: `max(snapshot ts) < hour start ≤ min(target ts)`; a deliberately leaky snapshot (`[h − W, h]`, including the hour) fails it
-- [ ] An epoch over 144 train hours projected < 20 min, with peak RAM < 4 GB (VRAM < 1.8 GB) at W = 24h. **If not:** compact active-node snapshots, hidden 32, or W = 6h, recorded; if still not, stop and raise Colab with triet
+- [x] Export round-trips: 5,078,345 rows, `tx_id` order matches `ts` order, no label or pattern columns among model inputs
+- [x] Leakage assert on every snapshot: `max(snapshot ts) < hour start ≤ min(target ts)`; a deliberately leaky snapshot (`[h − W, h]`, including the hour) fails it
+- [x] An epoch over 144 train hours projected < 20 min, with peak RAM < 4 GB (VRAM < 1.8 GB) at W = 24h. **If not:** compact active-node snapshots, hidden 32, or W = 6h, recorded; if still not, stop and raise Colab with triet
 
 **Verification:** `python src/gnn.py export`, then `python src/gnn.py bench`.
 **Dependencies:** T1 (can start alongside T2)
 **Files:** `src/gnn.py`, `requirements.txt`
+
+**Outcome:**
+- **Install:** torch 2.14.1 + CUDA 13.0 (sees the MX550) and torch_geometric 2.8.1, pinned in `requirements.txt` with the PyTorch CUDA index line.
+- **Export:** `gnn.py export` writes `data/gnn/edges.npz` (218 MB, 36 s): 5,078,345 edges in time order (asserted: `tx_id` = 0..n−1 and minutes non-decreasing), 515,088 accounts, 5,177 positives, all 4 splits. Model inputs come only from `EDGE_NUM` + `EDGE_CAT` (set A); `tx_id`, split and label are stored but never fed in.
+- **Leakage:** the snapshot assert holds on **all 425 hourly snapshots**, and a leaky snapshot that includes the target hour is caught. Snapshots are compacted to the accounts they touch; node input is a constant plus log1p in/out degree.
+- **Timing** (5 train hours, incl. the largest: hour 24 with a 1.1M-edge window):
+
+| Hidden | Device | s / snapshot | Epoch (144 h) | Peak memory |
+|---|---|---|---|---|
+| 64 | CPU | 4.34 | 10.4 min | 4.42 GB RAM (over the 4 GB budget) |
+| 64 | MX550 | 3.79 | 9.1 min | 3.39 GB on a 2 GB card: spills to shared RAM; the first run crashed ("CUDA error: unknown error") |
+| **32** | CPU | 2.17 | 5.2 min | 2.85 GB RAM |
+| **32** | **MX550** | **0.88** | **2.1 min** | **1.79 GB VRAM** |
+
+- **Decision:** **hidden 32 on the MX550** (2.5× CPU), with CPU as the fallback on any CUDA error. Hidden 64 runs only on CPU, viable once the D: page file is active.
+- **Machine:** the commit limit was the root cause of every out-of-memory failure since Phase 2 (system log: "Out of Virtual Memory" popups on 2026-10-29). triet set a 16–32 GB page file on D: (registry confirmed); it takes effect after the next restart.
 
 ## Task 5: Train `gnn/ABC` and `mlp/ABC`, score every row (M)
 
