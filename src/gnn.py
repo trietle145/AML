@@ -174,8 +174,10 @@ def bench(window_h=24, hidden=64, head_dim=54):
 
 # defaults follow IBM Multi-GNN's GIN settings (model_settings.json): lr ~0.006, class weight ~6, dropout 0.01 / 0.1,
 # batches of 8,192 transactions, up to 100 epochs. The baseline gnn/ABC used lr 0.001, pos_weight 100, whole hours, hidden 32
+# clip: gradient-norm cap per update (0 = off). Without it, runs at these settings blew up mid-training
+# (gnn_w72 epoch 10, gnn_best_s1 epoch 4: train loss jumps, then a dead model at val ~0.001)
 DEFAULTS = {"name": "gnn", "seed": 0, "hidden": 64, "window_h": 24, "lr": 0.006, "pos_weight": 6.0, "dropout": 0.01,
-            "head_dropout": 0.1, "batch_size": 8192, "max_epochs": 100, "patience": 10, "max_hours": 0}
+            "head_dropout": 0.1, "batch_size": 8192, "max_epochs": 100, "patience": 10, "max_hours": 0, "clip": 1.0}
 
 
 # train hours (shuffled each epoch), early stopping on val PR-AUC, then score every transaction into data/gnn/runs/<tag>.*
@@ -214,6 +216,8 @@ def train(tag, **cfg):
                     loss = loss_fn(out, b["y"][i])
                     opt.zero_grad()
                     loss.backward()
+                    if cfg["clip"]:
+                        nn.utils.clip_grad_norm_(model.parameters(), cfg["clip"])
                     opt.step()
                     total, steps = total + loss.item(), steps + 1
                 score[b["rows"].start + idx] = torch.sigmoid(out).detach().cpu().numpy()
@@ -234,6 +238,10 @@ def train(tag, **cfg):
             waited += 1
             if waited >= cfg["patience"]:
                 break
+        # a diverged run doesn't come back: stop instead of spending the remaining patience on a dead model
+        if loss > 10 * min(r["train_loss"] for r in history):
+            print(f"  {tag}: train loss jumped to {loss:.4f}, diverged; keeping epoch {int(np.argmax([r['val_pr_auc'] for r in history])) + 1}", flush=True)
+            break
     model.load_state_dict(best_state)
     for s in SPLITS:
         run(hours[s], False)
