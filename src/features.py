@@ -25,6 +25,9 @@ SET_C = [f"{s}_cpty_{w}" for s in SIDES for w in WINDOWS] + \
         [f"in_send_{st}_{w}" for w in PASS_WINDOWS for st in ("cnt", "usd")] + ["in_pass_ratio_24h"] + \
         ["pair_cnt_3d", "pair_rev_cnt_3d", "pair_min_since_last", "cyc3_cnt_3d"]
 NULLABLE_C = ["out_pass_ratio_24h", "in_pass_ratio_24h"]
+# set C+: set C with look-ahead (windows reach forward too). An experiment that breaks the strictly-past rule
+# (decisions.md, look-ahead experiment); never a headline model
+SET_C_AHEAD = [f"{c}_ahead" for c in SET_C]
 
 
 # usd_per_unit per currency, from train-split USD -> X conversions (tight); X -> USD only cross-checks
@@ -110,16 +113,18 @@ def build_b(con):
 # builds set C step by step into temp tables, returns the SELECT of tx_id + SET_C; leak="frame" (frames end at CURRENT ROW) or "cycle" (3-cycles ignore time order) are deliberately wrong
 def c_query(con, leak=None, where=None):
     end = "CURRENT ROW" if leak == "frame" else "INTERVAL 1 MINUTE PRECEDING"
+    # leak="ahead" is the look-ahead experiment (set C+): each window spans the same interval back and forward
+    frame = lambda interval: f"INTERVAL {interval} PRECEDING AND " + (f"INTERVAL {interval} FOLLOWING" if leak == "ahead" else end)
     cpty, cpty_w = [], []
     for s, (acct, _) in SIDES.items():
         other = "to_acct" if acct == "from_acct" else "from_acct"
         for w, interval in WINDOWS.items():
-            cpty_w.append(f"{s}_{w} AS (PARTITION BY {acct} ORDER BY ts RANGE BETWEEN INTERVAL {interval} PRECEDING AND {end})")
+            cpty_w.append(f"{s}_{w} AS (PARTITION BY {acct} ORDER BY ts RANGE BETWEEN {frame(interval)})")
             cpty.append(f"COUNT(DISTINCT {other}) OVER {s}_{w} {s}_cpty_{w}")
     # every transaction twice: as a send of from_acct and as a receipt of to_acct, so one window sees an account's other side
     flow, flow_w, pick = [], [], []
     for w, interval in PASS_WINDOWS.items():
-        flow_w.append(f"f_{w} AS (PARTITION BY acct ORDER BY ts RANGE BETWEEN INTERVAL {interval} PRECEDING AND {end})")
+        flow_w.append(f"f_{w} AS (PARTITION BY acct ORDER BY ts RANGE BETWEEN {frame(interval)})")
         for d in ("in", "out"):
             flow += [f"COUNT(*) FILTER (WHERE side = '{d}') OVER f_{w} {d}_cnt_{w}",
                      f"COALESCE(SUM(usd) FILTER (WHERE side = '{d}') OVER f_{w}, 0) {d}_usd_{w}"]
@@ -132,7 +137,7 @@ def c_query(con, leak=None, where=None):
              "MAX(CASE WHEN side = 'in' THEN out_usd_24h / NULLIF(in_usd_24h, 0) END) in_pass_ratio_24h"]
     # 3-cycle closing u -> v: some w with v -> w then w -> u, both inside the 3d before ts. Joined from u's past
     # receipts (in-degree <= ~1,084); ASOF finds the latest v -> w before w -> u
-    if leak == "cycle":
+    if leak in ("cycle", "ahead"):
         cyc = """SELECT c.tx_id, COUNT(DISTINCT c.w) n FROM (
                      SELECT t.tx_id, t.ts, t.to_acct v, e2.from_acct w FROM base t JOIN base e2 ON e2.to_acct = t.from_acct
                      WHERE e2.ts BETWEEN t.ts - INTERVAL 3 DAY AND t.ts + INTERVAL 3 DAY AND e2.from_acct NOT IN (t.from_acct, t.to_acct)) c
@@ -158,7 +163,7 @@ def c_query(con, leak=None, where=None):
                                COUNT(*) FILTER (WHERE from_acct < to_acct) OVER pw c_fwd, COUNT(*) FILTER (WHERE from_acct >= to_acct) OVER pw c_bwd,
                                MAX(ts) FILTER (WHERE from_acct < to_acct) OVER pw l_fwd, MAX(ts) FILTER (WHERE from_acct >= to_acct) OVER pw l_bwd
                         FROM base WINDOW pw AS (PARTITION BY least(from_acct, to_acct), greatest(from_acct, to_acct) ORDER BY ts
-                                                RANGE BETWEEN INTERVAL 3 DAY PRECEDING AND {end}))
+                                                RANGE BETWEEN {frame("3 DAY")}))
                     SELECT tx_id, CASE WHEN fwd THEN c_fwd ELSE c_bwd END pair_cnt_3d,
                            CASE WHEN from_self THEN 0 WHEN fwd THEN c_bwd ELSE c_fwd END pair_rev_cnt_3d,
                            COALESCE(date_diff('minute', CASE WHEN fwd THEN l_fwd ELSE l_bwd END, ts), {CAP_MINUTES}) pair_min_since_last
@@ -175,6 +180,21 @@ def c_query(con, leak=None, where=None):
 def build_c(con):
     con.execute(f"CREATE OR REPLACE TEMP TABLE features_c AS {c_query(con)}")
     con.execute("CREATE OR REPLACE TABLE features AS SELECT * FROM features JOIN features_c USING (tx_id) ORDER BY tx_id")
+
+
+# joins the 20 set-C+ columns (set C with look-ahead) onto `features`, replacing them if already there
+def build_c_ahead(con):
+    sql = c_query(con, leak="ahead")
+    con.execute(f"CREATE OR REPLACE TEMP TABLE features_ca AS SELECT tx_id, {', '.join(f'{c} {c}_ahead' for c in SET_C)} FROM ({sql})")
+    old = [c for c in SET_C_AHEAD if c in {r[0] for r in con.execute("DESCRIBE features").fetchall()}]
+    keep = f"* EXCLUDE ({', '.join(old)})" if old else "*"
+    con.execute(f"CREATE OR REPLACE TABLE features AS SELECT {keep} FROM features JOIN features_ca USING (tx_id) ORDER BY tx_id")
+    assert_nulls(con, SET_C_AHEAD, [f"{c}_ahead" for c in NULLABLE_C])
+    # look-ahead can only add counterparties, never remove them
+    assert con.execute("SELECT COUNT(*) FROM features WHERE in_cpty_3d_ahead < in_cpty_3d OR cyc3_cnt_3d_ahead < cyc3_cnt_3d").fetchall()[0][0] == 0
+    print(con.sql("""SELECT t.is_laundering, ROUND(AVG((cyc3_cnt_3d > 0)::INT), 4) cyc3_past, ROUND(AVG((cyc3_cnt_3d_ahead > 0)::INT), 4) cyc3_ahead,
+                            ROUND(AVG(in_cpty_3d), 2) in_cpty_past, ROUND(AVG(in_cpty_3d_ahead), 2) in_cpty_ahead
+                     FROM features f JOIN transactions t USING (tx_id) GROUP BY 1 ORDER BY 1""").df().to_string(index=False))
 
 
 # ~300 rows that stress the windows: random, hub accounts, same-minute ties, Sep 1, split boundaries, laundering
@@ -369,6 +389,8 @@ def main():
     # well below free RAM (~3.7 GB of 16) so DuckDB spills to disk instead of failing the allocation;
     # set C's 10M-row stream window fails at 3GB / all threads and runs at 1.5GB / 4 threads
     con = duckdb.connect(str(DB), config={"memory_limit": "1.5GB", "threads": 4})
+    if "ahead" in sys.argv:
+        return build_c_ahead(con)
     if "--check" in sys.argv:
         return leakage_check(con)
     build_fx(con)

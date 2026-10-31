@@ -10,10 +10,12 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import FunctionTransformer, OneHotEncoder, StandardScaler
 
-from features import SET_A, SET_B, SET_C
+from features import SET_A, SET_B, SET_C, SET_C_AHEAD
 from load import DB, ROOT
 
-FEATURE_SETS = {"A": SET_A, "AB": SET_A + SET_B, "ABC": SET_A + SET_B + SET_C}
+FEATURE_SETS = {"A": SET_A, "AB": SET_A + SET_B, "ABC": SET_A + SET_B + SET_C,
+                # look-ahead experiment only (set C with future transactions): never a headline model
+                "ABC_ahead": SET_A + SET_B + SET_C_AHEAD}
 CATEGORICAL = ["payment_format", "payment_currency", "receiving_currency", "hour"]
 GRID = [{"num_leaves": nl, "learning_rate": lr, "min_child_samples": mcs}
         for nl in (15, 63) for lr in (0.05, 0.1) for mcs in (50, 500)]
