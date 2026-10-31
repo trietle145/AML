@@ -269,6 +269,7 @@ def main():
     ap.add_argument("--analyze", action="store_true", help="val-only analysis of one lgbm model (--models, default lgbm/AB) instead of metrics")
     ap.add_argument("--phase", type=int, default=2, choices=[2, 3, 4], help="3 or 4 writes reports/phaseN-* and never touches earlier phases' files")
     ap.add_argument("--models", help="comma-separated models to evaluate (default: all in scores); required for a phase 3 --final run")
+    ap.add_argument("--tag", help="extra name in the output files (reports/phaseN-<tag>-*), e.g. a reference model scored after the phase's own test run")
     ap.add_argument("--pairs", help="comma-separated a:b pairs for paired differences, instead of PAIRS[phase]; b may be outside --models")
     ap.add_argument("--analyze-unlisted", action="store_true", help="train + val diagnosis of UNLISTED laundering (--models: past-score models, default lgbm/ABC,gnn/ABC); writes reports/phase4-unlisted-*")
     ap.add_argument("--analyze-patterns", action="store_true", help="train-only anatomy of the listed patterns (design input for set D); writes reports/phase4-pattern-anatomy.csv")
@@ -287,7 +288,7 @@ def main():
         con = duckdb.connect(str(DB), read_only=True, config={"memory_limit": "700MB", "threads": 2})
         return analyze(con, fs, "" if args.phase == 2 else f"phase{args.phase}-")
     final = args.split != "val"
-    prefix = "" if args.phase == 2 else f"phase{args.phase}-"
+    prefix = ("" if args.phase == 2 else f"phase{args.phase}-") + (f"{args.tag}-" if args.tag else "")
     models = args.models.split(",") if args.models else None
     if final and not args.final:
         ap.error(f"--split {args.split} needs --final: test and tail are scored once, after val review")

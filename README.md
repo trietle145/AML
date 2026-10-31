@@ -128,7 +128,7 @@ Published HI-Small results (IBM's Multi-GNN at about 0.57–0.68 minority-class 
 - **Their test is easier:** it includes the tail (655 easy positives, no UNLISTED).
 - **Different metric:** they report F1 at a fixed 0.5 cutoff.
 
-IBM's own code is being run unchanged on Kaggle ([`notebooks/kaggle_ibm.ipynb`](notebooks/kaggle_ibm.ipynb)), and its predictions will be scored with this project's metrics on this project's test range. That will put numbers on what the rules here cost: seeing later edges, short evaluation windows, and no account IDs. The literature review is in [`docs/phase4-research.md`](docs/phase4-research.md).
+IBM's own code is being run on Kaggle (kept out of this repository), and its predictions will be scored with this project's metrics on this project's test range. That will put numbers on what the rules here cost: seeing later edges, short evaluation windows, and no account IDs. The literature review is in [`docs/phase4-research.md`](docs/phase4-research.md).
 
 ## Repository
 
@@ -141,7 +141,7 @@ IBM's own code is being run unchanged on Kaggle ([`notebooks/kaggle_ibm.ipynb`](
 | `src/evaluate.py` | All metrics, bootstrap CIs, paired comparisons, recall by pattern, account-level alerts, diagnostics |
 | `src/metrics.py` | PR-AUC with a fast exact bootstrap, F1, top-K per day; self-checks on run |
 | `src/explain.py` | Plain-English alert reasons from grouped TreeSHAP |
-| `notebooks/` | EDA, the Colab GNN grid, the IBM reference run (Kaggle / Colab) |
+| `notebooks/` | EDA and the Colab GNN grid |
 | `reports/` | Every metric table as CSV, plus result write-ups and figures |
 | `docs/` | Locked evaluation rules (`decisions.md`), model walkthrough (`model.md`), literature review |
 

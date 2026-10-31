@@ -10,3 +10,6 @@ CLAUDE.md
 .vscode/
 notes/
 logs/
+# IBM Multi-GNN reference run: their code and results stay local
+notebooks/*ibm*.ipynb
+reports/phase4-ibm-*
