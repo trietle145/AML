@@ -1,6 +1,6 @@
 # Phase 3 results: graph features and a GNN against the frozen baseline
 
-*Rules: `docs/decisions.md`. Plan: `docs/phase3-plan.md`. Model walkthrough: `docs/model.md`. Val numbers regenerate with the `evaluate.py --split val --phase 3 --models … --pairs …` command recorded in the plan's T6 Outcome (CSVs: `reports/phase3-val-*.csv`). GNN run settings and histories: `reports/phase3-gnn-runs.csv`. Test and tail were scored once on 2026-10-30 after Checkpoint B (logs `logs/t6_test.log`, `logs/t6_tail.log`).*
+*Rules: `docs/decisions.md`. Models: `docs/model.md`. Val numbers regenerate with `evaluate.py --split val --phase 3 --models lgbm/AB,lgbm/ABC,gnn/ABC,mlp/ABC,gnn_s0/ABC,gnn_s1/ABC,gnn_s2/ABC,mlp_s0/ABC,mlp_s1/ABC,mlp_s2/ABC --pairs lgbm/ABC:lgbm/AB,gnn_s0/ABC:mlp_s0/ABC,gnn_s1/ABC:mlp_s1/ABC,gnn_s2/ABC:mlp_s2/ABC,gnn_s0/ABC:lgbm/ABC,gnn_s1/ABC:lgbm/ABC,gnn_s2/ABC:lgbm/ABC,mlp_s0/ABC:lgbm/ABC,mlp_s1/ABC:lgbm/ABC,mlp_s2/ABC:lgbm/ABC` (CSVs: `reports/phase3-val-*.csv`). GNN run settings and histories: `reports/phase3-gnn-runs.csv`. Test and tail were scored once on 2026-10-30 after Checkpoint B (logs `logs/t6_test.log`, `logs/t6_tail.log`).*
 
 ## Val (Sep 7–8; 965,524 rows, 1,036 laundering)
 
@@ -19,7 +19,7 @@ Val was used for early stopping, grid choice, best-epoch choice and thresholds, 
 | **MLP, 3 seeds** | **0.471 ± 0.006** (mean ± sd) | | | | |
 | **GNN, 3 seeds** | **0.470 ± 0.011** | | | | |
 
-- **Seeds:** `gnn_s0` = `gnn_ibm` (unclipped). `gnn_s1`/`s2` use gradient clipping, `clip=1.0`. Clipped seed 0 (`gnn_clip_s0`) diverged at epoch 3 and is excluded. The MLP seeds are unclipped; they never diverged.
+- **Seeds:** `gnn_s0` = `gnn_ibm` (unclipped). `gnn_s1`/`s2` use gradient clipping, `clip=1.0`. Clipped seed 0 (`gnn_clip_s0`) diverged at epoch 3 and is excluded. `mlp_s0` = `mlp_ibm` (unclipped); `mlp_s1`/`s2` use clipping too. No MLP run diverged.
 
 ### Paired differences (`phase3-val-paired.csv`; same rows, same resamples, 1,000×)
 
@@ -67,7 +67,7 @@ T6's condition was "the best GNN beats `lgbm/ABC` on val". Taken alone it does (
 
 ## Test (Sep 9–10; 862,792 rows, 956 laundering), scored once on 2026-10-30
 
-Same seven models, 10 comparisons, val thresholds, 1,000 resamples. Command: the val command in the plan's T6 Outcome with `--split test --final` and `lgbm/AB` left out of `--models` (it is only loaded as a pair partner; its Phase 2 test scores are reused).
+Same seven models, 10 comparisons, val thresholds, 1,000 resamples. Command: the val command above with `--split test --final` and `lgbm/AB` left out of `--models` (it is only loaded as a pair partner; its Phase 2 test scores are reused).
 
 ### Headline (`phase3-test-metrics.csv`)
 
