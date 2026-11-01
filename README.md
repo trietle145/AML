@@ -1,6 +1,10 @@
-# Follow the Money: transaction-level money-laundering detection
+# 💸 Money Laundering Detection
 
-Can a model spot laundering transactions as they happen, using only what a bank would know at that moment? This project asks that on IBM's synthetic **AML HI-Small** dataset (5.08M transfers, 0.10% laundering). The headline question is an ablation: **do graph features (who pays whom, money passing through, short cycles) beat per-transaction and per-account behaviour features?** The rules are strict on purpose: a time split, features from strictly earlier transactions only, no account IDs, and each test set scored once.
+**Flags laundering transactions in 5.1M bank transfers using only what a bank knows at the moment of each payment: trees, a graph neural network and an ensemble, on IBM's synthetic AML dataset.**
+
+![data](https://img.shields.io/badge/data-5.1M_transfers-555) ![base rate](https://img.shields.io/badge/laundering-0.1%25-555) ![model](https://img.shields.io/badge/model-LightGBM_%2B_MLP-blue) ![features](https://img.shields.io/badge/features-strictly_past-blue) ![test PR-AUC](https://img.shields.io/badge/test_PR--AUC-0.398-brightgreen) ![lift](https://img.shields.io/badge/vs_random-360x-brightgreen)
+
+The headline question is an ablation: **do graph features (who pays whom, money passing through, short cycles) beat per-transaction and per-account behaviour features?** The rules are strict on purpose: a time split, features from strictly earlier transactions only, no account IDs, and each test set scored once.
 
 ![Test PR-AUC by model](reports/figures/09_test_pr_auc.png)
 
@@ -140,7 +144,7 @@ Three things explain the gap:
 2. **Seeing the future.** Their val and test graphs contain every later transaction, so when the model scores the first payment of a laundering cycle it can already see the payment that closes it. On identical test rows IBM still leads by +0.127 PR-AUC, almost entirely on the slow multi-hop schemes (cycle, stack, random, bipartite).
 3. **Not the architecture.** Giving our *own* LightGBM the same look-ahead (graph features that also count future transactions) lifts it from 0.345 to **0.528** test PR-AUC, level with IBM's 0.525 (paired difference −0.003, not significant).
 
-So under real-time rules, where a payment is judged only on what happened before it, about 0.40 PR-AUC is what this data allows. The look-ahead experiment and its feature set are on branch **[`lookahead-features`](../../tree/lookahead-features)**. The literature review is in [`docs/phase4-research.md`](docs/phase4-research.md).
+So under real-time rules, where a payment is judged only on what happened before it, about 0.40 PR-AUC is what this data allows. The look-ahead experiment and its feature set are on branch **[`lookahead-features`](../../tree/lookahead-features)**.
 
 ## Repository
 
@@ -155,7 +159,7 @@ So under real-time rules, where a payment is judged only on what happened before
 | `src/explain.py` | Plain-English alert reasons from grouped TreeSHAP |
 | `notebooks/` | EDA and the Colab GNN grid |
 | `reports/` | Every metric table as CSV, plus result write-ups and figures |
-| `docs/` | Evaluation rules (`decisions.md`), every feature (`features.md`), every model (`model.md`), literature review (`phase4-research.md`) |
+| `docs/` | Evaluation rules (`decisions.md`), every feature (`features.md`), every model (`model.md`) |
 
 ## Reproduce
 

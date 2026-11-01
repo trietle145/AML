@@ -16,3 +16,19 @@ reports/phase4-ibm-*
 # working plans: kept locally, not part of the final repository
 docs/phase*-plan.md
 docs/plan-review.md
+# reports: only the figures, the two write-ups the README links and the test results behind its numbers are tracked;
+# everything else regenerates from src/ (evaluate.py, train.py, explain.py)
+reports/*
+!reports/figures/
+!reports/phase4-alert-examples.md
+!reports/unlisted-exploration.md
+!reports/test-metrics.csv
+!reports/phase3-test-metrics.csv
+!reports/phase3-test-paired.csv
+!reports/phase3-gnn-runs.csv
+!reports/phase4-test-metrics.csv
+!reports/phase4-test-paired.csv
+!reports/phase4-test-recall-by-pattern-at-k.csv
+!reports/phase4-val-accounts.csv
+!reports/phase4-ahead-test-*.csv
+docs/phase4-research.md
