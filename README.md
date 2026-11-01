@@ -2,8 +2,6 @@
 
 **Flags laundering transactions in 5.1M bank transfers using only what a bank knows at the moment of each payment: trees, a graph neural network and an ensemble, on IBM's synthetic AML dataset.**
 
-![data](https://img.shields.io/badge/data-5.1M_transfers-555) ![base rate](https://img.shields.io/badge/laundering-0.1%25-555) ![model](https://img.shields.io/badge/model-LightGBM_%2B_MLP-blue) ![features](https://img.shields.io/badge/features-strictly_past-blue) ![test PR-AUC](https://img.shields.io/badge/test_PR--AUC-0.398-brightgreen) ![lift](https://img.shields.io/badge/vs_random-360x-brightgreen)
-
 The headline question is an ablation: **do graph features (who pays whom, money passing through, short cycles) beat per-transaction and per-account behaviour features?** The rules are strict on purpose: a time split, features from strictly earlier transactions only, no account IDs, and each test set scored once.
 
 ![Test PR-AUC by model](reports/figures/09_test_pr_auc.png)
@@ -121,12 +119,12 @@ An equal-weight average of each model's percentile among its own training scores
 
 - **More graph features for the weak schemes.** Before building cycle (length 4–10), biclique and scatter-gather counts, a quick check measured how many val scheme rows could ever fire such a feature. Long cycles reached 2 of 66 cycle rows, and bicliques reached 0 of 49 bipartite and 4 of 150 stack rows, so neither was built. The reason is structural: a strictly-past feature can only fire on the payment that *completes* a structure, and most schemes take about 3 days while val and test are 2 days each. 13 of the 24 cycle attempts in val finish in test.
 - **Amount relative to the account's usual** (z-score, vs median, vs max): built, leak-checked, and no gain (−0.005 PR-AUC on val, not significant). Set B's amount-vs-mean already held that signal.
-- **UNLISTED laundering.** It shares accounts with listed schemes no more often than licit payments do (1.5% vs 1.4%). A model trained only to find it reaches val PR-AUC 0.015, and the published GNNs catch 0.5–4% of it. It's ordinary-looking spending of dirty money, so about 63% recall is the realistic ceiling. Details in [`reports/unlisted-exploration.md`](reports/unlisted-exploration.md).
+- **UNLISTED laundering.** It shares accounts with listed schemes no more often than licit payments do (1.5% vs 1.4%). A model trained only to find it reaches val PR-AUC 0.015, and the published GNNs catch 0.5–4% of it. It's ordinary-looking spending of dirty money, so about 63% recall is the realistic ceiling.
 
 ### 6. Making alerts usable
 
 - **Account-level alerts:** each account-day is scored by the max over its transactions. At **800 account alerts a day**, roughly one day's laundering accounts, LightGBM reaches 0.42 precision and 0.42 recall on val.
-- **Plain-English reasons:** per-alert TreeSHAP contributions from LightGBM, summed over 8 feature groups (correlated features otherwise split credit into large opposite values), are turned into sentences built from the alert's own values. For example: *"amount $14,764 (12x the receiver's 3-day average); paid by ACH; US Dollar to US Dollar, cross-bank."* 10 alerts were checked by hand against the raw rows, and all facts matched. The reasons also show where false alarms come from: a brand-new receiver getting a first ACH payment looks the same whether it's a scheme hop or a normal payment. Examples are in [`reports/phase4-alert-examples.md`](reports/phase4-alert-examples.md).
+- **Plain-English reasons:** per-alert TreeSHAP contributions from LightGBM, summed over 8 feature groups (correlated features otherwise split credit into large opposite values), are turned into sentences built from the alert's own values. For example: *"amount $14,764 (12x the receiver's 3-day average); paid by ACH; US Dollar to US Dollar, cross-bank."* 10 alerts were checked by hand against the raw rows, and all facts matched. The reasons also show where false alarms come from: a brand-new receiver getting a first ACH payment looks the same whether it's a scheme hop or a normal payment.
 
 ## How this compares with published results
 
