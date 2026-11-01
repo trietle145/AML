@@ -1,6 +1,6 @@
 # Phase 2 results: per-transaction + behavioral baseline
 
-*Rules: `docs/decisions.md`. Plan: `docs/phase2-plan.md`. All tables regenerate with `python src/evaluate.py --split val` (metrics, recall by pattern) and `python src/evaluate.py --analyze` (importance, single features, history), which write the CSVs in `reports/`.*
+*Rules: `docs/decisions.md`. All tables regenerate with `python src/evaluate.py --split val` (metrics, recall by pattern) and `python src/evaluate.py --analyze` (importance, single features, history), which write the CSVs in `reports/`.*
 
 ## Val (Sep 7–8; 965,524 rows, 1,036 laundering)
 
@@ -83,7 +83,7 @@ Each of the 42 A+B features was scored alone on val, both signs (categoricals sc
 ### Known optimism (accepted)
 
 - **Val numbers are tuned on val.** Early stopping, the grid and thresholds were all chosen there.
-- **Boundary leakage:** 64% of val pattern rows come from attempts that started in train (`docs/phase2-plan.md`, Risks). Test has a 2-day gap, and only 26% of its pattern rows come from attempts that started in train.
+- **Boundary leakage:** 64% of val pattern rows come from attempts that started in train. Test has a 2-day gap, and only 26% of its pattern rows come from attempts that started in train.
 
 ## Test (Sep 9–10; 862,792 rows, 956 laundering): scored once on 2026-10-29 at 17:08–18:12
 

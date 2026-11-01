@@ -21,13 +21,19 @@ def f1_at(y, score, threshold):
     return f1_score(y, np.asarray(score) >= threshold)
 
 
-# top-k scores per day; ties broken by a seeded shuffle so binary scorers aren't favoured by row order
-def precision_recall_at_k_per_day(y, score, day, k=ALERTS_PER_DAY, seed=0):
-    df = pd.DataFrame({"y": np.asarray(y), "s": np.asarray(score), "day": np.asarray(day)})
+# mask of the top-k scores per day; ties broken by a seeded shuffle so binary scorers aren't favoured by row order
+def top_k_per_day(score, day, k=ALERTS_PER_DAY, seed=0):
+    df = pd.DataFrame({"s": np.asarray(score), "day": np.asarray(day)})
     df["tie"] = np.random.default_rng(seed).random(len(df))
-    top = df.sort_values(["s", "tie"], ascending=False).groupby("day").head(k)
-    tp = top.y.sum()
-    return tp / len(top), tp / df.y.sum()
+    flag = np.zeros(len(df), bool)
+    flag[df.sort_values(["s", "tie"], ascending=False).groupby("day").head(k).index] = True
+    return flag
+
+
+def precision_recall_at_k_per_day(y, score, day, k=ALERTS_PER_DAY, seed=0):
+    y, top = np.asarray(y), top_k_per_day(score, day, k, seed)
+    tp = y[top].sum()
+    return tp / top.sum(), tp / y.sum()
 
 
 # pattern: pattern type for laundering rows ("UNLISTED" if none), ignored for licit rows

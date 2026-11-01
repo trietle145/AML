@@ -26,6 +26,7 @@ All live in `src/metrics.py`. Run `python src/metrics.py` for the self-check and
 | Uncertainty | `bootstrap_ci`, `paired_bootstrap_ci` | 1,000 resamples of the test set, 95% percentile CI |
 
 - **Why K = 500:** test averages about 431k transactions and 478 laundering transactions per day. 500 alerts per day is about 0.12% of volume and roughly one day's positives, a realistic investigator queue where a near-perfect model could catch most of a day's laundering.
+- **Account level: K = 800 account alerts per day** (approved by triet 2026-11-01). Each account-day is scored by the **max** score over the account's transactions that day, sent or received (`evaluate.py --accounts`). Same rule as the transaction budget: val has about 225k active accounts and 815 positive accounts per day, so 800 is roughly one day's positive accounts (0.36% of active accounts).
 - **"Significantly better":** the paired-bootstrap 95% CI of the difference (model A minus model B, same resamples) excludes 0.
 - **Reporting:** headline numbers come from `test`. `tail` is reported in its own column and never pooled with test. Test is scored once per final model; all tuning happens on val.
 - **Runtime:** a bootstrap over about 860k rows takes roughly 0.3 s per resample, so 1,000× is a few minutes per model.
@@ -91,3 +92,7 @@ Per-pattern test counts are small (43–127), so recall by pattern needs bootstr
 ## Phase 3 baseline (from Phase 2, T7)
 
 **`lgbm/AB` is the Phase 3 baseline**: LightGBM on feature sets A + B (`data/models/lgbm_AB.txt`; 63 leaves, learning rate 0.05, min_child_samples 500, 237 trees; val threshold 0.1652). Test PR-AUC 0.292 [0.261, 0.328] (attempt-cluster CI [0.232, 0.351]). Its per-row scores stay frozen in `scores` (`model = 'lgbm'`, `feature_set = 'AB'`) for Phase 3's paired bootstrap. Phase 3 must not retrain or overwrite it. Full results: `reports/phase2-results.md`.
+
+## Phase 4 base model (from Phase 3, T7; approved by triet 2026-10-31)
+
+**`lgbm/ABC` is the Phase 4 base model**: LightGBM on feature sets A + B + C (`data/models/lgbm_ABC.txt`; 15 leaves, learning rate 0.05, min_child_samples 500, 160 trees; val threshold 0.1675). Test PR-AUC 0.345 [0.313, 0.381] (attempt-cluster CI [0.286, 0.400]), paired +0.053 over `lgbm/AB`; P / R @500/day 0.389 / 0.407. The GNN (0.375 ± 0.003) and MLP (0.369 ± 0.002) rank slightly better overall but tie or lose at 500/day, and message passing added nothing measurable over the MLP. `lgbm/ABC` was chosen for being as good at the operating point, explainable (TreeSHAP via `pred_contrib`) and stable. **No new neural networks are trained in Phase 4**; existing MLP scores may only enter an ensemble. Its `scores` rows and model file are never retrained or overwritten (new feature sets get new names, e.g. `lgbm/ABCD`). Full results: `reports/phase3-results.md`.
