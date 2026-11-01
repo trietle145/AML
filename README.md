@@ -18,8 +18,9 @@ Can a model spot laundering transactions as they happen, using only what a bank 
 
 - **Graph features help.** Adding hand-made graph features to LightGBM gives **+0.053 PR-AUC** on test (paired bootstrap CI [0.024, 0.080]), significant under both row-level and attempt-cluster resampling. The same holds on val (+0.051).
 - **A graph neural network adds nothing on top.** A GNN with message passing and an MLP with the same inputs and head score the same (paired difference per seed: +0.002 / +0.006 / +0.011 on test, never significant). Once the graph is summarised into features, learning more from the graph structure doesn't pay.
-- **Blending a tree model with a neural net is the best single result.** It beats every individual model on test (+0.053 over LightGBM, +0.027 to +0.030 over each MLP seed, all significant). At the operating point the gain is small: 0.395 vs 0.389 precision at 500 alerts a day.
+- **Blending a tree model with a neural net gives the best result.** It beats both of its parts on test (+0.053 over LightGBM, +0.027 to +0.030 over each MLP seed, all significant). At the operating point the gain is small: 0.395 vs 0.389 precision at 500 alerts a day.
 - **A third of laundering is out of reach.** 38% of laundering rows belong to no listed scheme ("UNLISTED"), and every model, ours and the published ones, catches about 1–3% of them.
+- **Published scores are higher because their models see future transactions.** Give our own LightGBM the same look-ahead and it matches IBM's GNN (see [the comparison](#how-this-compares-with-published-results)).
 
 ## The data
 
@@ -78,6 +79,8 @@ The setup aims to measure what would work in deployment, not to maximise a leade
 | **B**: account behaviour | each account's own past, on one side | counts and USD sums over 1h / 24h / 3d, amount vs its own mean, ACH share, minutes since last activity, new-account flags |
 | **C**: graph context | counterparties and flows | distinct counterparties (fan-in/out), money received then sent on (pass-through), pair history ("paid this receiver before"), money coming back, time-ordered 3-cycles |
 
+Every column, the rules and the leakage checks: [`docs/features.md`](docs/features.md).
+
 ### 1. Baselines: trees beat linear models
 
 LightGBM, grid-searched on val, against logistic regression and a "flag every ACH" floor. Account behaviour is the big step: LightGBM goes from 0.070 (A) to **0.292** (A+B) on test. Logistic regression barely moves, because the signal is in bands and combinations: ACH, no history, an amount just under $20k. About half of all laundering involves an account with no recent history, which strictly-past features can see.
@@ -88,15 +91,15 @@ Set C is built in DuckDB with time-ordered windows, and LightGBM is retrained on
 
 ### 3. A graph neural network vs its control
 
-- **The GNN:** a GINE edge classifier (PyTorch Geometric) with reverse message passing, run on hourly snapshots of strictly-past edges, classifying each transaction from its two accounts' embeddings plus its A+B+C features.
+- **The GNN (ours):** a GINE edge classifier (PyTorch Geometric) with reverse message passing, run on hourly snapshots of strictly-past edges, classifying each transaction from its two accounts' embeddings plus its A+B+C features.
 - **The control:** an MLP with the identical head and inputs, but no message passing.
-- **Training:** IBM-style settings, tuned on a Colab T4 grid, with 3 seeds each. Details in [`docs/model.md`](docs/model.md).
+- **Training:** hyperparameters taken from IBM's published Multi-GNN config (learning rate 0.006, class weight 6, batches of 8,192), tuned on a Colab T4 grid, with 3 seeds each. Architecture and training in [`docs/model.md`](docs/model.md).
 
 **Result: GNN ≈ MLP** on val (0.470 vs 0.471) and test (0.375 vs 0.369), with no seed significant. The GNN was also less stable: 2 of 5 runs diverged at the chosen learning rate, against none of the MLP runs. Both neural nets rank better than LightGBM overall but tie it at 500 alerts a day: their extra ranking quality sits deeper in the list.
 
 ### 4. Ensemble
 
-An equal-weight average of each model's percentile among its own training scores. The mapping is fixed on train, and no weight was tuned on val. On test it beats LightGBM by +0.053 and each MLP seed by about +0.03, all significant. Strengths differ by scheme: LightGBM is better on fan-in and stack, the neural nets on fan-out and gather-scatter, and the blend keeps most of both.
+An equal-weight average of each model's percentile among its own training scores. The mapping is fixed on train, and no weight was tuned on val. On test it beats LightGBM by +0.053 and each MLP seed by about +0.03, all significant (it was not compared with the GNN seeds). Strengths differ by scheme: LightGBM is better on fan-in and stack, the neural nets on fan-out and gather-scatter, and the blend keeps most of both.
 
 | Recall on test, at each model's val threshold | Rows | LightGBM A+B | LightGBM A+B+C | Ensemble |
 |---|---|---|---|---|
@@ -121,14 +124,23 @@ An equal-weight average of each model's percentile among its own training scores
 - **Account-level alerts:** each account-day is scored by the max over its transactions. At **800 account alerts a day**, roughly one day's laundering accounts, LightGBM reaches 0.42 precision and 0.42 recall on val.
 - **Plain-English reasons:** per-alert TreeSHAP contributions from LightGBM, summed over 8 feature groups (correlated features otherwise split credit into large opposite values), are turned into sentences built from the alert's own values. For example: *"amount $14,764 (12x the receiver's 3-day average); paid by ACH; US Dollar to US Dollar, cross-bank."* 10 alerts were checked by hand against the raw rows, and all facts matched. The reasons also show where false alarms come from: a brand-new receiver getting a first ACH payment looks the same whether it's a scheme hop or a normal payment. Examples are in [`reports/phase4-alert-examples.md`](reports/phase4-alert-examples.md).
 
-## How this compares with published results (in progress)
+## How this compares with published results
 
-Published HI-Small results (IBM's Multi-GNN at about 0.57–0.68 minority-class F1, and later graph transformers at 0.70–0.76) aren't directly comparable:
-- **They see the future:** their val and test graphs contain every later transaction.
-- **Their test is easier:** it includes the tail (655 easy positives, no UNLISTED).
-- **Different metric:** they report F1 at a fixed 0.5 cutoff.
+Published HI-Small results look much better: about 0.65–0.68 minority-class F1 for IBM's Multi-GNN, up to 0.76 for later graph transformers, against our 0.42. To find out why, IBM's own code was run on the same data (on Kaggle; their code is kept out of this repository) and its per-transaction predictions were scored with this project's metrics.
 
-IBM's own code is being run on Kaggle (kept out of this repository), and its predictions will be scored with this project's metrics on this project's test range. That will put numbers on what the rules here cost: seeing later edges, short evaluation windows, and no account IDs. The literature review is in [`docs/phase4-research.md`](docs/phase4-research.md).
+| Test | PR-AUC | F1 |
+|---|---|---|
+| Our best (`ens/ABC`), our test days | 0.398 | 0.42 |
+| IBM Multi-GNN, our test days | 0.525 | 0.58 |
+| IBM Multi-GNN, their protocol (test + tail, F1 at 0.5) | 0.673 | **0.71**, reproducing their published ~0.70 |
+| Our best, on their test range (test + tail) | 0.604 | 0.59 |
+
+Three things explain the gap:
+1. **An easier test set.** Published test sets include the dataset's tail: 655 easy positives from listed schemes winding down, none UNLISTED. That alone lifts our F1 from 0.42 to 0.59.
+2. **Seeing the future.** Their val and test graphs contain every later transaction, so when the model scores the first payment of a laundering cycle it can already see the payment that closes it. On identical test rows IBM still leads by +0.127 PR-AUC, almost entirely on the slow multi-hop schemes (cycle, stack, random, bipartite).
+3. **Not the architecture.** Giving our *own* LightGBM the same look-ahead (graph features that also count future transactions) lifts it from 0.345 to **0.528** test PR-AUC, level with IBM's 0.525 (paired difference −0.003, not significant).
+
+So under real-time rules, where a payment is judged only on what happened before it, about 0.40 PR-AUC is what this data allows. The look-ahead experiment and its feature set are on branch **[`lookahead-features`](../../tree/lookahead-features)**. The literature review is in [`docs/phase4-research.md`](docs/phase4-research.md).
 
 ## Repository
 
@@ -143,7 +155,7 @@ IBM's own code is being run on Kaggle (kept out of this repository), and its pre
 | `src/explain.py` | Plain-English alert reasons from grouped TreeSHAP |
 | `notebooks/` | EDA and the Colab GNN grid |
 | `reports/` | Every metric table as CSV, plus result write-ups and figures |
-| `docs/` | Locked evaluation rules (`decisions.md`), model walkthrough (`model.md`), literature review |
+| `docs/` | Evaluation rules (`decisions.md`), every feature (`features.md`), every model (`model.md`), literature review (`phase4-research.md`) |
 
 ## Reproduce
 

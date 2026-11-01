@@ -13,3 +13,6 @@ logs/
 # IBM Multi-GNN reference run: their code and results stay local
 notebooks/*ibm*.ipynb
 reports/phase4-ibm-*
+# working plans: kept locally, not part of the final repository
+docs/phase*-plan.md
+docs/plan-review.md
