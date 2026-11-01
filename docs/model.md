@@ -119,7 +119,7 @@ LightGBM's built-in TreeSHAP (`pred_contrib=True`) splits each alert's score int
 - currency and bank;
 - time of day.
 
-The top 3 groups become sentences built from the alert's own values. Examples: [`reports/phase4-alert-examples.md`](../reports/phase4-alert-examples.md).
+The top 3 groups become sentences built from the alert's own values.
 
 ## What the comparisons isolate
 

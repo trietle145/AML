@@ -2,8 +2,6 @@
 
 **Why published results on IBM's AML dataset score far above real-time models, measured: they see future transactions. With the same look-ahead, a plain LightGBM matches IBM's Multi-GNN.**
 
-![experiment](https://img.shields.io/badge/experiment-look--ahead-orange) ![real time](https://img.shields.io/badge/ours%2C_real_time-0.398_PR--AUC-lightgrey) ![ours look-ahead](https://img.shields.io/badge/ours%2C_look--ahead-0.528_PR--AUC-brightgreen) ![IBM](https://img.shields.io/badge/IBM_Multi--GNN-0.525_PR--AUC-blue) ![difference](https://img.shields.io/badge/difference-not_significant-555)
-
 *This branch extends the main project (branch `main`: the full pipeline, data analysis, models and results) with one question: **why do published results on IBM's AML HI-Small dataset score so much higher than ours, and what would it take to match them?***
 
 Our best real-time model reaches 0.398 test PR-AUC (F1 0.42). Published graph neural networks report about 0.65–0.76 minority-class F1. The answer, measured below: **published models see future transactions.** Give our own LightGBM the same view of the future and it matches IBM's Multi-GNN exactly.
